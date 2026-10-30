@@ -1,0 +1,12 @@
+{
+  "handles": true,
+  "allocator": true,
+  "sections": {
+    "dqchan": {
+      ".text.xmp3_DequantChannel": "ov_mp3"
+    },
+    "subband": {
+      ".text.xmp3_Subband": "ov_mp3"
+    }
+  }
+}

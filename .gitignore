@@ -1,0 +1,10 @@
+/tmp/
+/cache/
+/evidence/
+/player/build/
+/player/evidence/
+__pycache__/
+*.pyc
+/gbamp3.gba
+/host/*.pcm
+/listen/

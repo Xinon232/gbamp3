@@ -1,0 +1,18 @@
+GBAWriter input engine, Copyright (C) 2026 Halim Jarrar, GPL-3.0-or-later
+(see LICENSES/GPL-3.0.txt), with the following additional permission:
+
+Additional permission under GNU GPL version 3 section 7
+If you modify this Program, or any covered work, by linking or combining it
+with the Helix MP3 decoder (or a modified version of that library),
+containing parts covered by the terms of the RealNetworks Public Source
+License 1.0, the licensor of this Program grants you additional permission
+to convey the resulting work. Corresponding Source for a non-source form of
+such a combination shall include the source code for the parts of the Helix
+MP3 decoder used as well as that of the covered work.
+
+Source: GBAWriter v1.2.0 by Halim Jarrar, commit
+577ff2a88b80cd8673672fd16e8629649678fca5 (writer_core.cpp, writer_core.h).
+GBAWriter's source is published at github.com/Xinon232/gbawriter.
+writer_core.cpp is unchanged. writer_core.h: TEXT_CAPACITY lowered from
+1024*1024 bytes to 63 for gbamp3's one-line fields (search, playlist names).
+gbamp3 drives it through player/src/writer_glue.cpp.

@@ -1,0 +1,52 @@
+{
+  "upstream": "https://github.com/Xinon232/gbareader",
+  "tag": "v1.3.0",
+  "commit": "723232ab364ea5771f7a905ab8f6c8d77a3a5f78",
+  "files": [
+    {
+      "upstream_path": "src/supercard_driver.c",
+      "upstream_sha256": "b36c293616fd478c81416fa0e8f1c15b6957acad0d17f19115ef36ab4725784d",
+      "local_path": "gbasd/src/supercard_driver.c",
+      "local_sha256": "57ddc38837d6b2efc464e1418b0a0bb5edcb3f5428a29edecd34ea3c3f3666b8"
+    },
+    {
+      "upstream_path": "src/supercard_io.s",
+      "upstream_sha256": "8fd98ffe8ff1a7fd08b700b1475ebdbed1e69a2834b0242d55769ab07f361c7d",
+      "local_path": "gbasd/src/supercard_io.s",
+      "local_sha256": "869547b63e5098a3b3726fb6956a80a7c883e340ea68079aa61522e09ecab61d"
+    },
+    {
+      "upstream_path": "src/crc.c",
+      "upstream_sha256": "1744eb17c18dd486ed179f0eab5833ef4a211ae4da613400ece4c6632e111c6e",
+      "local_path": "gbasd/src/crc.c",
+      "local_sha256": "93ff43c44b9e24a5f00c3835e3e0d7577ebb363af827710d79680c59ceb84961"
+    },
+    {
+      "upstream_path": "src/supercard_env.c",
+      "upstream_sha256": "9a35c3c42530f7e07a6b9719413c650b4d35398fa10e73f880f9df438c81fe89",
+      "local_path": "gbasd/src/supercard_env.c",
+      "local_sha256": "9a35c3c42530f7e07a6b9719413c650b4d35398fa10e73f880f9df438c81fe89"
+    },
+    {
+      "upstream_path": "include/supercard_driver.h",
+      "upstream_sha256": "82d39736cb58358fe1504e577eb9ce06b40dbcab5f9ada233bf2c2e2bb108301",
+      "local_path": "gbasd/include/supercard_driver.h",
+      "local_sha256": "211adf8520f47f809b1c59ad79878e67a0a0a16d76b6a8b93d763385de678fe0"
+    },
+    {
+      "upstream_path": "include/crc.h",
+      "upstream_sha256": "7eb70b3f00178b71b5f2703d489cc3b5425b9501a57296975cdf8251f719101a",
+      "local_path": "gbasd/include/crc.h",
+      "local_sha256": "ccaf9ec3cefb2a012bb60da677b90675ffbbaec30b900d8ed820f2b06ea5828d"
+    },
+    {
+      "upstream_path": "src/supercard_io.s (sector writer part)",
+      "upstream_sha256": "8fd98ffe8ff1a7fd08b700b1475ebdbed1e69a2834b0242d55769ab07f361c7d",
+      "local_path": "gbasd/src/supercard_write.s",
+      "local_sha256": "3ff407e53731fb5b3a51e167518e0cee0cb27847a77ab4c4832ec7ef549dfd26"
+    }
+  ],
+  "local_repository": "https://github.com/Xinon232/gbaSD",
+  "local_commit": "3ee9d379b8b3e2818e374ef232e57099c87a12b6",
+  "note": "Since v2.2 the SuperCard driver comes from gbaSD (git submodule gbasd/); local_sha256 are the files at local_commit."
+}

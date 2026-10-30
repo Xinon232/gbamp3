@@ -1,0 +1,8 @@
+* text=auto
+*.pdf -text
+*.mp3 -text
+*.pcm -text
+*.gba -text
+*.elf -text
+*.zip -text
+*.gz -text

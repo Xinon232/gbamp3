@@ -1,0 +1,6 @@
+# Native MSYS2 bash must not receive Windows CRLF scripts.
+*.sh text eol=lf
+# Verbatim upstream notices are SHA-256 pinned; never translate their bytes.
+GCC-COPYING3.txt -text
+GCC-COPYING.RUNTIME.txt -text
+MinGW-w64-COPYING.txt -text

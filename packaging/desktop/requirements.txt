@@ -1,0 +1,9 @@
+pyinstaller==6.16.0
+numpy==2.3.3
+pyinstaller-hooks-contrib==2026.7
+altgraph==0.17.5
+packaging==26.3
+setuptools==79.0.1
+pefile==2023.2.7; sys_platform == 'win32'
+pywin32-ctypes==0.2.3; sys_platform == 'win32'
+macholib==1.16.3; sys_platform == 'darwin'

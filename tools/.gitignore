@@ -1,0 +1,4 @@
+# Optional desktop helpers built locally; release jobs package their own native binary.
+/gac_native.dll
+/libgac_native.so
+/libgac_native.dylib

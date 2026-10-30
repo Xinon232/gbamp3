@@ -1,0 +1,8 @@
+Helix notice packaging — 2026-09-12
+
+This copy derives from player-adaptive-quality in the same workspace. The notice-changes.json evidence records each original and resulting source hash. All original file bytes follow the new comment verbatim; no algorithm changes are made by this packaging step.
+
+Inherited GBA decoder work includes ARMv4T arithmetic/layout kernels, reduced synthesis, reduced retained bands, rational output-rate metadata, sparse transform/history optimizations and adaptive phase selection. These remain Helix-derived work under the RPSL. Earlier exact per-file change dates are not reconstructed by this packaging record. The experimental source/evidence history must accompany the final modification history.
+
+RPSL.txt and the original upstream notices remain applicable. RCSL.txt is retained as the upstream alternative. Full per-file Exhibit A notices are added, including files whose older notice already contained parts of the text. Contributor blanks in the upstream template are not a claim of additional authorship.
+

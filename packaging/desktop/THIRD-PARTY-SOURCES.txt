@@ -1,0 +1,35 @@
+GAC Converter: third-party provenance and source distribution
+
+The converter launches its bundled FFmpeg as a separate subprocess. It does not
+link FFmpeg libraries into the converter. This is our minimal native source build,
+not an imageio wheel or a binary obtained from a third-party FFmpeg distributor.
+
+Exact FFmpeg/LAME/zlib versions, source URLs and SHA-256 are in ffmpeg-provenance.json.
+Exact backend license and configuration are in FFmpeg-LICENSE-and-build.txt.
+GPL, version3 and nonfree are disabled; license output is required to identify LGPL
+2.1 or later. All source license and copyright notices remain applicable, including
+JPEG/IJG-related notices and zlib's license. The complete archives preserve every
+per-file notice. GCC runtime exception/reference notices are also retained; Windows
+builds additionally preserve installed UCRT64 compiler/CRT package license files.
+These developer tools/system components are not a bundled compiler distribution.
+
+The matching ffmpeg-source-TARGET.tar.gz is a REQUIRED sibling release artifact.
+It contains the exact original source bytes, no-patch declaration, build scripts,
+complete configured source trees, object files/static libraries, toolchain inventory,
+full build/configuration logs and qualification. See BACKEND-SOURCE.md for an editable
+offline rebuild and concrete relink instructions. ffmpeg-provenance.json in this app
+binds the source bundle hash to the original executable hash; PyInstaller may re-sign
+Mach-O files, so packaged hashes are recorded separately. Publish and preserve these
+source bytes alongside the binary; temporary CI retention is not permanent hosting.
+There is no written source offer and no claim of cross-toolchain bitwise
+reproducibility.
+
+Python, Tcl/Tk, NumPy (including bundled libraries), setuptools/vendor dependencies
+and PyInstaller licenses are collected from exact installed versions or upstream
+tags. PyInstaller's bootloader exception is retained. Downloaded notice URLs/hashes
+are recorded in runtime-provenance.json. The backend offline recipe does not provision
+a Python/freezer environment or SDK for rebuilding the entire standalone application.
+
+Original project authorship, including Halim Jarrar, and inherited player notices
+are retained under project/ and PROJECT-NOTICES.md. No copyrighted music is
+included; verification uses synthetic tones and generated artwork only.

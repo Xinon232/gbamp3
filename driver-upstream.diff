@@ -1,0 +1,931 @@
+--- gbareader-v1.3.0/src/supercard_driver.c
++++ player/vendor/superfw/supercard_driver.c
+@@ -20,9 +20,10 @@
+ // http://elm-chan.org/docs/mmc/mmc_e.html
+ // https://www.davidgf.net/2011/07/05/usb_sd_reader/index.html
+ 
+-#include <stdio.h>
+-
+-#include "gbahw.h"
++
++
++
++#include <stddef.h>
+ #include "supercard_driver.h"
+ #include "crc.h"
+ 
+@@ -62,10 +63,6 @@
+   &sc_read_sectors_w0, &sc_read_sectors_w1
+ };
+ 
+-const static t_wrsec_fn sc_write_sectors[2] = {
+-  &sc_write_sectors_w0, &sc_write_sectors_w1
+-};
+-
+ // Util functions (implemented in ASM)
+ void send_empty_clocks(unsigned count);
+ bool wait_sdcard_idle(unsigned timeout);
+@@ -80,11 +77,11 @@
+ #define MAX_WRITE_RETRIES        2            // Try up to 3 times to write a block.
+ #define MAX_REINIT_RETRIES       9            // Try up to 10 to re-init the card.
+ 
+-#define WAIT_IDLE_TIMEOUT    (0x800000 / SDDRV_TIMEOUT_MULT)   // Number of iterations to wait for card ready
++#define WAIT_IDLE_TIMEOUT    (0x8000 / SDDRV_TIMEOUT_MULT)   // Number of iterations to wait for card ready
+ #define WAIT_RESP_TIMEOUT     (0x60000 / SDDRV_TIMEOUT_MULT)   // Aprox ~100ms as command timeout
+ #define WAIT_READY_COUNT         (4096 / SDDRV_TIMEOUT_MULT)   // Aprox 50-200ms, should take less
+ #define WAIT_EREADY_TIMEOUT  (0x200000 / SDDRV_TIMEOUT_MULT)   // Around 500ms.
+-#define WAIT_DATA_TIMEOUT    (0x400000 / SDDRV_TIMEOUT_MULT)   // Aprox ~1s as data timeout
++#define WAIT_DATA_TIMEOUT    (0x4000 / SDDRV_TIMEOUT_MULT)   // Bounded playback stall; slow cards fail safely
+ 
+ #define OCR_CCS         0x40000000
+ #define OCR_NBUSY       0x80000000
+@@ -106,6 +103,7 @@
+ #define SD_CMD12       12   // Stop reading (multiple blocks)
+ #define SD_CMD13       13   // Send status
+ #define SD_CMD16       16   // Set block length
++#define SD_CMD17       17   // Single block read, no stop command
+ #define SD_CMD18       18   // Read multiple blocks
+ #define SD_CMD24       24   // Write single block
+ #define SD_CMD25       25   // Write multiple blocks
+@@ -139,7 +137,7 @@
+ void write_supercard_mode(uint16_t modebits) {
+   // Write magic value and then the mode value (twice) to trigger the mode change.
+   // Using asm to ensure we place a proper memory barrier.
+-  asm volatile (
++  __asm__ volatile (
+     "strh %1, [%0]\n"
+     "strh %1, [%0]\n"
+     "strh %2, [%0]\n"
+@@ -150,32 +148,6 @@
+     : "memory");
+ }
+ 
+-static void push_superchis_normap(uint8_t value) {
+-  asm volatile (
+-    "strh %1, [%0]\n"
+-    "strh %1, [%0]\n"
+-    "strh %2, [%0]\n"
+-    :: "l"(REG_SC_MODE_REG_ADDR),
+-       "l"(MODESWITCH_MAGIC),
+-       "l"((unsigned int)(0x100 | value))
+-    : "memory");
+-}
+-
+-void set_superchis_normap(const uint8_t *blks) {
+-  for (unsigned i = 0; i < 8; i++)
+-    push_superchis_normap(blks[i]);
+-}
+-
+-void reset_superchis_normap() {
+-  // Clears the map to zero (mirrored flash base)
+-  for (unsigned i = 0; i < 8; i++)
+-    push_superchis_normap(0);
+-}
+-
+-void sram_superchis_bank(unsigned bankn) {
+-  write_supercard_mode(0x70 | ((bankn & 1) << 3));
+-}
+-
+ void set_supercard_mode(unsigned mapped_area, bool write_access, bool sdcard_interface) {
+   // Bit0: Controls SDRAM vs internal Flash mapping
+   // Bit1: Controls whether the SD card interface is mapped into the ROM addresspace.
+@@ -187,7 +159,7 @@
+ }
+ 
+ // Waits for idle and sends a command. Does nothing afterwards
+-static bool send_sdcard_command_raw(uint8_t cmd, uint32_t arg) {
++static __attribute__((section(".iwram"),noinline,noclone)) bool send_sdcard_command_raw(uint8_t cmd, uint32_t arg) {
+   // Send the command bit banging it via the CMD interface.
+   uint8_t buf[6] = { 0x40 | cmd, arg >> 24, arg >> 16, arg >> 8, arg, 0 };
+   buf[5] = crc7(buf, 5);
+@@ -223,16 +195,6 @@
+   return ret;
+ }
+ 
+-static bool send_get_status(uint16_t *status) {
+-  uint8_t resp[6];
+-  if (!send_sdcard_command(SD_CMD13, sc_rca() << 16, resp, sizeof(resp)))
+-    return false;
+-
+-  if (status)
+-    *status = (resp[1] << 8) | resp[2];
+-  return true;
+-}
+-
+ #ifndef NO_SUPERCARD_INIT
+ 
+ // Sends the command and pushes some clocks, but ignores any response.
+@@ -266,57 +228,11 @@
+   return true;
+ }
+ 
+-// Re-init the SD card. This just initializes the driver variables/state and
+-// the card is assume to be init/ready.
+-unsigned sdcard_reinit() {
+-  uint8_t resp[20];
+-
+-  // Pipe out any weirdness left in the previous state?
+-  send_empty_clocks(64);
+-
+-  // Move the card into standby mode.
+-  // We assme that the card might be in transfer state (or standby).
+-  // Resend it a couple of times, since there is no response ...
+-  for (unsigned i = 0; i < 3; i++)
+-    send_sdcard_command_nowait(SD_CMD7, 0);
+-
+-  // Get a new RCA, try a few times just in case
+-  for (unsigned i = 0; i < 1+MAX_REINIT_RETRIES; i++) {
+-    if (send_sdcard_command(SD_CMD3, 0, resp, SD_MAX_RESP)) {
+-      if (resp[0] == SD_CMD3) {
+-        drv_rca = (resp[1] << 8) | resp[2];
+-        break;
+-      }
+-    }
+-    if (i == MAX_REINIT_RETRIES)
+-      return SD_ERR_BAD_INIT;
+-  }
+-
+-  // Get CSD register, see if we have a SDSC or an SDHC/XC.
+-  for (unsigned i = 0; i < 1+MAX_REINIT_RETRIES; i++) {
+-    if (!send_sdcard_command(SD_CMD9, drv_rca << 16, resp, 20))
+-      return SD_ERR_BAD_CAP;
+-
+-    if (resp[0] == 0x3F) {  // Check for reserved token seq.
+-      uint32_t csd_ver = resp[1] >> 6;
+-      drv_issdhc = (csd_ver == 1);
+-      break;
+-    }
+-
+-    if (i == MAX_REINIT_RETRIES)
+-      return SD_ERR_BAD_CAP;
+-  }
+-
+-  // Select card, move back into Transfer mode.
+-  if (!send_sdcard_command(SD_CMD7, drv_rca << 16, NULL, SD_MAX_RESP))
+-    return SD_ERR_BAD_MODEXCH;
+-
+-  return 0;
+-}
+-
+ // SD card init, as per "Card Initialization and Identification Flow (SD mode)"
+ unsigned sdcard_init(t_card_info *info) {
+   uint8_t resp[SD_MAX_RESP_BUF];
++  drv_issdhc = false; drv_rca = 0;
++  bool ready = false;
+ 
+   // Wait for card to be internally initialized. As per spec:
+   // Initialization delay: The maximum of 1 msec, 74 clock cycles and supply ramp up time
+@@ -345,10 +261,13 @@
+ 
+     uint32_t ocr = (resp[1] << 24) | (resp[2] << 16) | (resp[3] << 8) | resp[4];
+     if (ocr & OCR_NBUSY) {
++      ready = true;
+       drv_issdhc = cmd8_ok && (ocr & OCR_CCS);   // It is a V2 card with SDHC support!
+       break;    // Stop polling
+     }
+   }
++
++  if (!ready) return SD_ERR_BAD_IDENT;
+ 
+   // Run identification phase now.
+   if (!send_sdcard_command(SD_CMD2, 0, resp, SD_MAX_RESP_BUF))
+@@ -368,7 +287,7 @@
+ 
+     uint32_t response = (resp[1] << 24) | (resp[2] << 16) | (resp[3] << 8) | resp[4];
+     uint32_t cstate = ((response >> 9) & 0xF);
+-    if (cstate != 0x3) {  // Not in Standby mode
++    if (cstate == 0x3) {  // RCA is valid in Standby mode
+       drv_rca = (resp[1] << 8) | resp[2];
+       break;
+     }
+@@ -383,12 +302,15 @@
+   if (!send_sdcard_command(SD_CMD9, drv_rca << 16, resp, SD_MAX_RESP_BUF))
+     return SD_ERR_BAD_CAP;
+ 
++  if (resp[0] != 0x3f || (resp[1] >> 6) > 1 ||
++      ((resp[1] >> 6) == 1) != drv_issdhc) return SD_ERR_BAD_CAP;
++
+   // Extract some data from the CSD register.
+   if (info) {
+     unsigned csd_ver = resp[1] >> 6;
+     if (csd_ver == 0) {
+-      unsigned c_size = ((resp[8] << 10) | (resp[9] << 2) | (resp[10] >> 6)) & 0xFFF;
+-      unsigned s_mult = ((resp[11] << 1) | (resp[12] >> 7)) & 0x7;
++      unsigned c_size = ((resp[7] << 10) | (resp[8] << 2) | (resp[9] >> 6)) & 0xFFF;
++      unsigned s_mult = ((resp[10] << 1) | (resp[11] >> 7)) & 0x7;
+       unsigned readbl = resp[6] & 0xF;
+ 
+       unsigned block_len = (1 << readbl);
+@@ -424,53 +346,19 @@
+ 
+ #endif
+ 
++__attribute__((section(".iwram"),noinline,noclone))
+ unsigned sdcard_read_blocks(uint8_t *buffer, uint32_t blocknum, unsigned blkcnt) {
+-  uint8_t resp[4];
+-  if (!send_sdcard_command_noclock(SD_CMD18, sc_issdhc() ? blocknum : blocknum * 512, resp, sizeof(resp)))
++  uint8_t resp[6];
++  if (!send_sdcard_command_noclock(blkcnt == 1 ? SD_CMD17 : SD_CMD18, sc_issdhc() ? blocknum : blocknum * 512, resp, sizeof(resp)))
+     return SD_ERR_BADREAD;
+ 
+   // Read all data using the asm routine for speed.
+-  if (sc_read_sectors[SC_FAST_ROM_MIRROR ? 1 : 0](buffer, blkcnt, WAIT_DATA_TIMEOUT))
++  bool failed = sc_read_sectors[SC_FAST_ROM_MIRROR ? 1 : 0](buffer, blkcnt, WAIT_DATA_TIMEOUT) != 0;
++
++  if (blkcnt == 1) send_empty_clocks(8);
++  /* CMD18 must be stopped even after a data timeout. */
++  if (blkcnt != 1 && !send_sdcard_command(SD_CMD12, 0, NULL, SD_MAX_RESP))
+     return SD_ERR_BADREAD;
+-
+-  if (!send_sdcard_command(SD_CMD12, 0, NULL, SD_MAX_RESP))
+-    return SD_ERR_BADREAD;
+-  return 0;
+-}
+-
+-unsigned sdcard_write_blocks(const uint8_t *buffer, uint32_t blocknum, unsigned blkcnt) {
+-  // Send a write intent / clear command, for faster writes. Do not take errors
+-  // too seriously, this is "optional" really.
+-  #ifdef SD_PREERASE_BLOCKS_WRITE
+-  if (send_sdcard_command(SD_CMD55, sc_rca() << 16, NULL, SD_MAX_RESP))
+-    send_sdcard_command(SD_ACMD23, blkcnt, NULL, SD_MAX_RESP);
+-  #endif
+-
+-  // Perform a block write. The ASM function handles it all (CRC and all).
+-  for (unsigned j = 0; j < 1+MAX_WRITE_RETRIES; j++) {
+-    if (!send_sdcard_command_noclock(SD_CMD25, sc_issdhc() ? blocknum : blocknum * 512, NULL, SD_R1_RESP))
+-      return SD_ERR_BADWRITE;
+-
+-    bool wr_ok = !sc_write_sectors[SC_FAST_ROM_MIRROR ? 1 : 0](buffer, blkcnt, WAIT_DATA_TIMEOUT);
+-
+-    // Send CMD12 to signal the end of the write sequence!
+-    if (!send_sdcard_command(SD_CMD12, 0, NULL, SD_MAX_RESP))
+-      return SD_ERR_BADWRITE;
+-
+-    // CMD12 pulls DAT0 low while busy (usually writing). Wait for !busy.
+-    wait_dat0_idle(WAIT_EREADY_TIMEOUT);
+-
+-    if (wr_ok) {
+-      // Check the status/error code reported by CMD13, should be zero.
+-      uint16_t cardst = 0xFFFF;
+-      if (!send_get_status(&cardst))
+-        return SD_ERR_BADWRITE;
+-
+-      if (cardst == 0)
+-        return 0;     // Write seq successful!
+-    }
+-  }
+-
+-  return SD_ERR_BADWRITE;
+-}
+-
++  return failed ? SD_ERR_BADREAD : 0;
++}
++
+--- gbareader-v1.3.0/src/supercard_io.s
++++ player/vendor/superfw/supercard_io.S
+@@ -272,356 +272,12 @@
+ #endif
+ 
+ 
+-// Writes a bunch of 512 byte sectors, calculating checksums for them as well
+-// as checking any error codes returned (and waiting between blocks).
+-
+-// r0: data byte buffer (input)
+-// r1: number of 512byte blocks to send/write
+-// r2: number of timeout iterations when waiting for data.
+-// returns non zero on timeout or data rejected (ie. CRC error, write error...)
+-.global sc_write_sectors_w0   // Version that uses 0x08000000-0x09FFFFFF addrs
+-.global sc_write_sectors_w1   // Version that uses 0x0A000000-0x0BFFFFFF addrs
+-
+-#ifndef SUPERCARD_LITE_IO
+-
+-.type sc_write_sectors_w0,function
+-sc_write_sectors_w0:
+-  push {r4-r7, lr}
+-  mov r6, $(SC_WRITE_REGISTER_8)
+-  b 9f
+-
+-.type sc_write_sectors_w1,function
+-sc_write_sectors_w1:
+-  push {r4-r7, lr}
+-  mov r6, $(SC_WRITE_REGISTER_A)
+-
+-9:
+-  sub sp, $8    // Some space for the CRC buffer
+-  mov r4, r0    // Input buffer
+-  mov r5, r1    // Block count
+-  mov r7, r2    // Save the timeout count.
+-
+-  // Calculate crc for the first block.
+-  mov r1, sp
+-  bl crc16_nibble_512_nolut
+-
+-  1: // Loop r5 times. Try to perform checksum while waiting for write to finish.
+-
+-    // Go ahead send the data! Send the first byte token (0xFE? should be 0xFC!)
+-    mov r1, $0
+-    mov r2, $0xFFFFFFFF
+-    str r2, [r6]
+-    str r2, [r6]
+-    str r2, [r6]
+-    strh r2, [r6]
+-    strh r1, [r6]
+-
+-    mov r1, $(512 / 2 / 8)   // Pushing 512 bytes in halfwords (unrolled x8)
+-    2:
+-      .rept 16
+-        ldrb r2, [r4], #1    // Load byte from buffer
+-        str r2, [r6]
+-      .endr
+-      subs r1, r1, $1
+-      bne 2b
+-
+-    .set i, 0
+-    .rept 8                  // Send 16x4 bits of checksum
+-      ldrb r2, [sp, #(i)]
+-      str r2, [r6]
+-      .set i, i+1
+-    .endr
+-
+-    // Response token is 8 bits, only transmitted via DAT0.
+-    // Write one to the bus, read a couple more times (ignore 3 MSB)
+-    mov  r2, $(~0)            // All data lines high after last bit
+-    strh r2, [r6]
+-    strh r2, [r6]
+-    strh r2, [r6]
+-    strh r2, [r6]
+-
+-    // Get status code (3 bits) + dummy bit
+-    mov r0, $0
+-    .rept 4
+-      lsl r0, $1
+-      ldrh r2, [r6]
+-      tst r2, $SD_DATA0
+-      orrne r0, $0x1
+-    .endr
+-
+-    // Pipe one byte, some cards do not start actually writing (ie. go busy?)
+-    // until we pipe an extra clock? Perhaps not, but does no harm.
+-    .rept 4
+-      ldr r2, [r6]
+-    .endr
+-
+-    // Check status code, bail on error
+-    cmp r0, $0x5              // 0.010.1 means "data accepted" (0.status.1)
+-    bne 3f                    // Wait and exit with error
+-
+-    // Break out if we are on the last block!
+-    subs r5, $1
+-    beq 5f
+-
+-    // Calculate the block checksum for the next block to send.
+-    // (helps hiding busy latency!)
+-    mov r0, r4
+-    mov r1, sp
+-    bl crc16_nibble_512_nolut   // Must be in IWRAM as well!
+-
+-    // Perform a wait on the data bus, DAT0 goes high when ready.
+-    mov r1, r7
+-    2:
+-      subs r1, r1, $1
+-      beq 4f
+-      ldrh r2, [r6]
+-      tst r2, $(SD_DATA0)
+-    beq 2b
+-
+-    b 1b  // Continue loop on the next block.
+-
+-5:
+-  // Perform a final wait, ensure we leave with no pending operations.
+-  2:
+-    subs r7, r7, $1
+-    beq 4f
+-    ldrh r2, [r6]
+-    tst r2, $(SD_DATA0)
+-  beq 2b
+-
+-  add sp, $8
+-  pop {r4-r7, lr}
+-  mov r0, $0            // Return OK
+-  bx lr
+-
+-3:  // Wait-and-exit on error
+-  2:
+-    subs r7, r7, $1
+-    beq 4f
+-    ldrh r2, [r6]
+-    tst r2, $(SD_DATA0)
+-  beq 2b
+-
+-4:  // Return non zero on timeout/response error
+-  add sp, $8
+-  pop {r4-r7, lr}
+-  mov r0, $1
+-  bx lr
+-
+-#else
+-
+-.type sc_write_sectors_w0,function
+-sc_write_sectors_w0:
+-.type sc_write_sectors_w1,function
+-sc_write_sectors_w1:
+-
+-  push {r2, r4-r11, lr}
+-  mov r6, $(SC_WRITE_REGISTER_8)
+-  mov r7, $(SCLITE_DATA_REGISTER32)
+-
+-  sub sp, $8    // Some space for the CRC buffer
+-  mov r4, r0    // Input buffer
+-  mov r5, r1    // Block count
+-
+-  // Calculate crc for the first block.
+-  mov r1, sp
+-  bl crc16_nibble_512_nolut
+-
+-  // See if the input buffer is aligned for more performance.
+-  tst r4, $3
+-  bne 9f
+-
+-  1: // Loop r5 times. Try to perform checksum while waiting for write to finish.
+-
+-    // Go ahead send the data! Send the first byte token (0xFE? should be 0xFC!)
+-    mov r1, $0
+-    mov r2, $0xFFFFFFFF
+-    str r2, [r6]
+-    str r2, [r6]
+-    str r2, [r6]
+-    strh r2, [r6]
+-    strh r1, [r6]
+-
+-    .rept 16
+-      ldm r4!, {r0, r1, r2, r3, r8, r9, r10, r11}
+-      stm r7, {r0, r1, r2, r3, r8, r9, r10, r11}
+-    .endr
+-
+-    // Send checksum in one go
+-    ldr r2, [sp, #0]
+-    ldr r3, [sp, #4]
+-    stm r7, {r2, r3}
+-
+-    // Response token is 8 bits, only transmitted via DAT0.
+-    // Write one to the bus, read a couple more times (ignore 3 MSB)
+-    mov  r2, $(~0)            // All data lines high after last bit
+-    strh r2, [r6]
+-    strh r2, [r6]
+-    strh r2, [r6]
+-    strh r2, [r6]
+-
+-    // Get status code (3 bits) + dummy bit
+-    mov r0, $0
+-    .rept 4
+-      lsl r0, $1
+-      ldrh r2, [r6]
+-      tst r2, $SD_DATA0
+-      orrne r0, $0x1
+-    .endr
+-
+-    // Pipe one byte, some cards do not start actually writing (ie. go busy?)
+-    // until we pipe an extra clock? Perhaps not, but does no harm.
+-    .rept 4
+-      ldr r2, [r6]
+-    .endr
+-
+-    // Check status code, bail on error
+-    cmp r0, $0x5              // 0.010.1 means "data accepted" (0.status.1)
+-    bne 3f                    // Wait and exit with error
+-
+-    // Break out if we are on the last block!
+-    subs r5, $1
+-    beq 5f
+-
+-    // Calculate the block checksum for the next block to send.
+-    // (helps hiding busy latency!)
+-    mov r0, r4
+-    mov r1, sp
+-    bl crc16_nibble_512_nolut   // Must be in IWRAM as well!
+-
+-    // Perform a wait on the data bus, DAT0 goes high when ready.
+-    ldr r1, [sp, #8]
+-    2:
+-      subs r1, r1, $1
+-      beq 4f
+-      ldrh r2, [r6]
+-      tst r2, $(SD_DATA0)
+-    beq 2b
+-
+-    b 1b  // Continue loop on the next block.
+-
+-
+-  // SLOW path. Uses byte-level reads.
+-9:
+-  1: // Loop r5 times. Try to perform checksum while waiting for write to finish.
+-
+-    // Go ahead send the data! Send the first byte token (0xFE? should be 0xFC!)
+-    mov r1, $0
+-    mov r2, $0xFFFFFFFF
+-    str r2, [r6]
+-    str r2, [r6]
+-    str r2, [r6]
+-    strh r2, [r6]
+-    strh r1, [r6]
+-
+-    mov r1, $(512 / 4 / 8)   // Pushing 512 bytes in halfwords (unrolled x8)
+-    2:
+-      .rept 8
+-        ldrb r2, [r4], #1    // Load bytes from buffer
+-        ldrb r3, [r4], #1
+-        orr r2, r2, r3, lsl #8
+-        ldrb r3, [r4], #1
+-        orr r2, r2, r3, lsl #16
+-        ldrb r3, [r4], #1
+-        orr r2, r2, r3, lsl #24
+-
+-        str r2, [r7]         // Write using the 32 bit interface
+-      .endr
+-      subs r1, r1, $1
+-      bne 2b
+-
+-    // Send checksum in one go
+-    ldr r2, [sp, #0]
+-    ldr r3, [sp, #4]
+-    stm r7, {r2, r3}
+-
+-    // Response token is 8 bits, only transmitted via DAT0.
+-    // Write one to the bus, read a couple more times (ignore 3 MSB)
+-    mov  r2, $(~0)            // All data lines high after last bit
+-    strh r2, [r6]
+-    strh r2, [r6]
+-    strh r2, [r6]
+-    strh r2, [r6]
+-
+-    // Get status code (3 bits) + dummy bit
+-    mov r0, $0
+-    .rept 4
+-      lsl r0, $1
+-      ldrh r2, [r6]
+-      tst r2, $SD_DATA0
+-      orrne r0, $0x1
+-    .endr
+-
+-    // Pipe one byte, some cards do not start actually writing (ie. go busy?)
+-    // until we pipe an extra clock? Perhaps not, but does no harm.
+-    .rept 4
+-      ldr r2, [r6]
+-    .endr
+-
+-    // Check status code, bail on error
+-    cmp r0, $0x5              // 0.010.1 means "data accepted" (0.status.1)
+-    bne 3f                    // Wait and exit with error
+-
+-    // Break out if we are on the last block!
+-    subs r5, $1
+-    beq 5f
+-
+-    // Calculate the block checksum for the next block to send.
+-    // (helps hiding busy latency!)
+-    mov r0, r4
+-    mov r1, sp
+-    bl crc16_nibble_512_nolut   // Must be in IWRAM as well!
+-
+-    // Perform a wait on the data bus, DAT0 goes high when ready.
+-    ldr r1, [sp, #8]
+-    2:
+-      subs r1, r1, $1
+-      beq 4f
+-      ldrh r2, [r6]
+-      tst r2, $(SD_DATA0)
+-    beq 2b
+-
+-    b 1b  // Continue loop on the next block.
+-
+-
+-5:
+-  // Perform a final wait, ensure we leave with no pending operations.
+-  ldr r0, [sp, #8]
+-  2:
+-    subs r0, r0, $1
+-    beq 4f
+-    ldrh r2, [r6]
+-    tst r2, $(SD_DATA0)
+-  beq 2b
+-
+-  add sp, $(8 + 4)
+-  pop {r4-r11, lr}
+-  mov r0, $0            // Return OK
+-  bx lr
+-
+-3:  // Wait-and-exit on error
+-  ldr r0, [sp, #8]
+-  2:
+-    subs r0, r0, $1
+-    beq 4f
+-    ldrh r2, [r6]
+-    tst r2, $(SD_DATA0)
+-  beq 2b
+-
+-4:  // Return non zero on timeout/response error
+-  add sp, $(8 + 4)
+-  pop {r4-r11, lr}
+-  mov r0, $1
+-  bx lr
+-
+-#endif
+-
+ .pool
+ 
+ // Command-related routines
+ // These are placed here so they can be reimplemented on other modes.
+ 
+-.text
++.section .iwram.text, "ax", %progbits
+ .align 4
+ .thumb
+ 
+--- gbareader-v1.3.0/src/crc.c
++++ player/vendor/superfw/crc.c
+@@ -16,20 +16,7 @@
+  * <http://www.gnu.org/licenses/>.
+  */
+ 
+-#include "compiler.h"
+ #include "crc.h"
+-
+-#include <stdbool.h>
+-
+-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+-  static inline uint32_t read32be(uint32_t v) {
+-    return (v >> 24) | (v << 24) | ((v >> 8) & 0x0000FF00) | ((v << 8) & 0x00FF0000);
+-  }
+-#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+-  static inline uint32_t read32be(uint32_t v) { return v; }
+-#else
+-  #error Could not detect platform endianess
+-#endif
+ 
+ // CRC utility routines for the SD driver.
+ 
+@@ -70,6 +57,7 @@
+   0x8C, 0x9E, 0xA8, 0xBA, 0xC4, 0xD6, 0xE0, 0xF2,
+ };
+ 
++__attribute__((section(".iwram"),noinline,noclone))
+ uint8_t crc7(const uint8_t *buf, unsigned size) {
+   uint8_t ret = 0;
+   while (size--)
+@@ -77,256 +65,3 @@
+   return ret | 1;
+ }
+ 
+-// Slower version, not actually used but here for reference.
+-uint8_t crc7_nolut(const uint8_t *buf, unsigned size) {
+-  uint8_t ret = 0;  // Initial CRC value, can be adjusted depending on the standard
+-  for (unsigned i = 0; i < size; i++) {
+-    ret ^= buf[i];
+-    for (unsigned j = 0; j < 8; j++) {
+-      uint8_t pxor = (ret & 0x80) ? CRC7_POLY : 0x00;
+-      ret = (ret ^ pxor) << 1;
+-    }
+-  }
+-  return ret | 1;
+-}
+-
+-static const uint16_t crc16_lut[256] = {
+-  0x0000,0x1021,0x2042,0x3063,0x4084,0x50a5,0x60c6,0x70e7,
+-  0x8108,0x9129,0xa14a,0xb16b,0xc18c,0xd1ad,0xe1ce,0xf1ef,
+-  0x1231,0x0210,0x3273,0x2252,0x52b5,0x4294,0x72f7,0x62d6,
+-  0x9339,0x8318,0xb37b,0xa35a,0xd3bd,0xc39c,0xf3ff,0xe3de,
+-  0x2462,0x3443,0x0420,0x1401,0x64e6,0x74c7,0x44a4,0x5485,
+-  0xa56a,0xb54b,0x8528,0x9509,0xe5ee,0xf5cf,0xc5ac,0xd58d,
+-  0x3653,0x2672,0x1611,0x0630,0x76d7,0x66f6,0x5695,0x46b4,
+-  0xb75b,0xa77a,0x9719,0x8738,0xf7df,0xe7fe,0xd79d,0xc7bc,
+-  0x48c4,0x58e5,0x6886,0x78a7,0x0840,0x1861,0x2802,0x3823,
+-  0xc9cc,0xd9ed,0xe98e,0xf9af,0x8948,0x9969,0xa90a,0xb92b,
+-  0x5af5,0x4ad4,0x7ab7,0x6a96,0x1a71,0x0a50,0x3a33,0x2a12,
+-  0xdbfd,0xcbdc,0xfbbf,0xeb9e,0x9b79,0x8b58,0xbb3b,0xab1a,
+-  0x6ca6,0x7c87,0x4ce4,0x5cc5,0x2c22,0x3c03,0x0c60,0x1c41,
+-  0xedae,0xfd8f,0xcdec,0xddcd,0xad2a,0xbd0b,0x8d68,0x9d49,
+-  0x7e97,0x6eb6,0x5ed5,0x4ef4,0x3e13,0x2e32,0x1e51,0x0e70,
+-  0xff9f,0xefbe,0xdfdd,0xcffc,0xbf1b,0xaf3a,0x9f59,0x8f78,
+-  0x9188,0x81a9,0xb1ca,0xa1eb,0xd10c,0xc12d,0xf14e,0xe16f,
+-  0x1080,0x00a1,0x30c2,0x20e3,0x5004,0x4025,0x7046,0x6067,
+-  0x83b9,0x9398,0xa3fb,0xb3da,0xc33d,0xd31c,0xe37f,0xf35e,
+-  0x02b1,0x1290,0x22f3,0x32d2,0x4235,0x5214,0x6277,0x7256,
+-  0xb5ea,0xa5cb,0x95a8,0x8589,0xf56e,0xe54f,0xd52c,0xc50d,
+-  0x34e2,0x24c3,0x14a0,0x0481,0x7466,0x6447,0x5424,0x4405,
+-  0xa7db,0xb7fa,0x8799,0x97b8,0xe75f,0xf77e,0xc71d,0xd73c,
+-  0x26d3,0x36f2,0x0691,0x16b0,0x6657,0x7676,0x4615,0x5634,
+-  0xd94c,0xc96d,0xf90e,0xe92f,0x99c8,0x89e9,0xb98a,0xa9ab,
+-  0x5844,0x4865,0x7806,0x6827,0x18c0,0x08e1,0x3882,0x28a3,
+-  0xcb7d,0xdb5c,0xeb3f,0xfb1e,0x8bf9,0x9bd8,0xabbb,0xbb9a,
+-  0x4a75,0x5a54,0x6a37,0x7a16,0x0af1,0x1ad0,0x2ab3,0x3a92,
+-  0xfd2e,0xed0f,0xdd6c,0xcd4d,0xbdaa,0xad8b,0x9de8,0x8dc9,
+-  0x7c26,0x6c07,0x5c64,0x4c45,0x3ca2,0x2c83,0x1ce0,0x0cc1,
+-  0xef1f,0xff3e,0xcf5d,0xdf7c,0xaf9b,0xbfba,0x8fd9,0x9ff8,
+-  0x6e17,0x7e36,0x4e55,0x5e74,0x2e93,0x3eb2,0x0ed1,0x1ef0
+-};
+-
+-// This is the regular CRC16 (0x8005 poly) but in reverse (0xA001)
+-uint16_t ds_crc16(const uint8_t *buf, unsigned size) {
+-  uint16_t ret = 0xFFFF;
+-  for (unsigned i = 0; i < size; i++) {
+-    ret ^= *buf++;
+-    for (unsigned j = 0; j < 8; j++)
+-      ret = (ret >> 1) ^ ((ret & 1) ? 0xA001 : 0);
+-  }
+-  return ret;
+-}
+-
+-// Calculates the CRC16 checksum for the SD card protocol. That is, for each
+-// of the 4 lanes it calculates a CRC16, then we pack them in nibbles since
+-// they are sent that way (1x4 bits at a time).
+-// Data is interleaved and then processed using a LUT for speed.
+-
+-static inline uint8_t pack_msb_nibbles(uint32_t u) {
+-  // Picks the MSB for each nibble into a byte.
+-  // If the word "u" is in the format "abcd.efgh.ijkl.mnop.qrst.uvwx.1234.5678"
+-  // this returns the byte "15qu.imae" (MSB goes first)
+-  // Takes advantage of ARM barrel shifter to extract the bits in a clever way.
+-  uint32_t ph = (u)      & 0x80808080;
+-  uint32_t pl = (u << 3) & 0x40404040;
+-  uint32_t m = ph | pl;
+-  m = (m | (m >> 10));
+-  m = (m | (m >> 20));
+-  return (uint8_t)m;
+-}
+-
+-// The performance is ~16 cycles per byte, which is roughly 0.5ms per block.
+-
+-ARM_CODE IWRAM_CODE NOINLINE
+-void crc16_nibble_512(const uint8_t *buf, uint8_t *crcout) {
+-  uint16_t d[4] = {0,0,0,0};
+-  bool aligned = ((((uintptr_t)buf) & 3) == 0);
+-
+-  if (aligned) {
+-    for (unsigned i = 0; i < 512 / 4; i++) {
+-      // Little endian is assumed!
+-      uint32_t u = *(uint32_t*)buf;
+-      buf += 4;
+-
+-      for (unsigned j = 0; j < 4; j++) {
+-        uint8_t bi = pack_msb_nibbles(u << j);
+-        uint8_t a = (d[j] >> 8) ^ bi;
+-        d[j] = (d[j] << 8) ^ crc16_lut[a];
+-      }
+-    }
+-  } else {
+-    for (unsigned i = 0; i < 512 / 4; i++) {
+-      // Little endian is assumed!
+-      uint32_t u = buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24);
+-      buf += 4;
+-
+-      for (unsigned j = 0; j < 4; j++) {
+-        uint8_t bi = pack_msb_nibbles(u << j);
+-        uint8_t a = (d[j] >> 8) ^ bi;
+-        d[j] = (d[j] << 8) ^ crc16_lut[a];
+-      }
+-    }
+-  }
+-
+-  // Store the result sequentially (nibble by nibble) so it can be sent as-is
+-  // via the Supercard interface.
+-  for (int i = 7; i >= 0; i--) {
+-    uint8_t outb = 0;
+-    uint8_t tbit = 1;
+-    #pragma GCC unroll 8
+-    for (int j = 7; j >= 0; j--) {
+-      if ((d[j & 3]) & 1)
+-        outb |= tbit;
+-      d[j & 3] >>= 1;
+-      tbit <<= 1;
+-    }
+-    crcout[i] = outb;
+-  }
+-}
+-
+-// Same as above, but consume input as byte (for SRAM like memory)
+-ARM_CODE IWRAM_CODE NOINLINE
+-void crc16_nibble_512_8bit(const uint8_t *buf, uint8_t *crcout) {
+-  uint16_t d[4] = {0,0,0,0};
+-
+-  for (unsigned i = 0; i < 512 / 4; i++) {
+-    // Little endian is assumed!
+-    uint32_t u = buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24);
+-    buf += 4;
+-
+-    for (unsigned j = 0; j < 4; j++) {
+-      uint8_t bi = pack_msb_nibbles(u << j);
+-      uint8_t a = (d[j] >> 8) ^ bi;
+-      d[j] = (d[j] << 8) ^ crc16_lut[a];
+-    }
+-  }
+-
+-  // Store the result sequentially (nibble by nibble) so it can be sent as-is
+-  // via the Supercard interface.
+-  for (int i = 7; i >= 0; i--) {
+-    uint8_t outb = 0;
+-    uint8_t tbit = 1;
+-    for (int j = 7; j >= 0; j--) {
+-      if ((d[j & 3]) & 1)
+-        outb |= tbit;
+-      d[j & 3] >>= 1;
+-      tbit <<= 1;
+-    }
+-    crcout[i] = outb;
+-  }
+-}
+-
+-/* Uses 64 bit register and interleaves the bits. The poly constant is expanded to 64 bits.
+-void crc16_nibble_512_nolut_A(const uint8_t *buf, uint8_t *crcout) {
+-  uint64_t crc = 0;
+-  for (unsigned i = 0; i < 512; i++) {
+-    uint64_t lf = (crc >> 60) ^ (buf[i] >> 4);
+-    crc = (crc << 4);
+-    for (unsigned j = 0; j < 4; j++)
+-      if (lf & (1 << j))
+-        crc ^= 0x0001000000100001ULL << j;
+-
+-    uint64_t hf = (crc >> 60) ^ (buf[i] & 0xF);
+-    crc = (crc << 4);
+-    for (unsigned j = 0; j < 4; j++)
+-      if (hf & (1 << j))
+-        crc ^= 0x0001000000100001ULL << j;
+-  }
+-  for (int i = 0; i < 8; i++)
+-    crcout[i] = crc >> ((7-i) * 8);
+-} */
+-
+-/*  Same as above, but work one byte at a time.
+-    Instead of xor-ing with the poly, we iterate poly bits (only 3 bits)
+-void crc16_nibble_512_nolut(const uint8_t *buf, uint8_t *crcout) {
+-  uint64_t crc = 0;
+-  for (unsigned i = 0; i < 512; i++) {
+-    uint64_t lf = (crc >> 56) ^ buf[i];
+-    crc = (crc << 8);
+-    crc ^= lf;
+-    crc ^= lf << (5*4);
+-    crc ^= lf << (12*4);
+-  }
+-  for (int i = 0; i < 8; i++)
+-    crcout[i] = crc >> ((7-i) * 8);
+-} */
+-
+-// The performance is ~7 cycles per byte, which is roughly 0.25ms per block.
+-
+-ARM_CODE IWRAM_CODE NOINLINE
+-void crc16_nibble_512_nolutw(const uint8_t *buf, uint8_t *crcout) {
+-  uint64_t crc = 0;    // 16 bit per channel, interleaved
+-  for (unsigned i = 0; i < 512; i += 2) {
+-    uint64_t lf = (crc >> 48) ^ (buf[i+1] | (buf[i] << 8));
+-    crc = (crc << 16);
+-    crc ^= lf;
+-    crc ^= lf << (5*4);
+-    crc ^= lf << (12*4);
+-  }
+-  for (int i = 0; i < 8; i++)
+-    crcout[i] = crc >> ((7-i) * 8);
+-}
+-
+-// A no-LUT version that works using words. Similar to the half-word version, but
+-// needs some tweaking, due to overlapping poly bits (doesn't happen with nibbles).
+-// Has a slower path for non-aligned buffers.
+-// The performance is ~4.5 cycles per byte, which is roughly 0.1ms per block.
+-
+-ARM_CODE IWRAM_CODE NOINLINE
+-void crc16_nibble_512_nolut8bit(const uint8_t *buf, uint8_t *crcout) {
+-  uint64_t crc = 0;
+-  for (unsigned i = 0; i < 512; i += 4) {
+-    uint32_t data32 = buf[i+3] | (buf[i+2] << 8) | (buf[i+1] << 16) | (buf[i] << 24);
+-    uint64_t lf = (crc >> 32) ^ data32;
+-    crc = (crc << 32);
+-    lf ^= lf >> 16;
+-    crc ^= lf;
+-    crc ^= lf << (5*4);
+-    crc ^= lf << (12*4);
+-  }
+-  for (int i = 0; i < 8; i++)
+-    crcout[i] = crc >> ((7-i) * 8);
+-}
+-
+-ARM_CODE IWRAM_CODE NOINLINE
+-void crc16_nibble_512_nolut(const uint8_t *buf, uint8_t *crcout) {
+-  uint64_t crc = 0;    // 16 bit per channel, interleaved
+-  bool aligned = ((((uintptr_t)buf) & 3) == 0);
+-
+-  if (!aligned)
+-    crc16_nibble_512_nolut8bit(buf, crcout);
+-  else {
+-    for (unsigned i = 0; i < 512; i += 4) {
+-      uint32_t data32 = read32be(*(uint32_t*)&buf[i]);
+-      uint64_t lf = (crc >> 32) ^ data32;
+-      crc = (crc << 32);
+-      lf ^= lf >> 16;        // Propagate overlapping bits
+-      crc ^= lf;
+-      crc ^= lf << (5*4);
+-      crc ^= lf << (12*4);
+-    }
+-    for (int i = 0; i < 8; i++)
+-      crcout[i] = crc >> ((7-i) * 8);
+-  }
+-}
+-
+-

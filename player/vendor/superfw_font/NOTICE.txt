@@ -1,0 +1,11 @@
+SuperFW font renderer, UTF-8 helpers and font data, Copyright (C) 2024-2025 David
+Guillen Fandos, GPL-3.0-or-later (see LICENSES/GPL-3.0.txt and the per-file
+notices). Glyphs derive from UNSCII and GNU Unifont.
+
+Taken unchanged from GBAVocab by Halim Jarrar (commit
+3aefa5cedc0944008f81338a105bc3966ec19231; published at
+github.com/Xinon232/gbavocab), which carries SuperFW's sources.
+fonts-latin-greek-cyrillic.pack is a subset of SuperFW's font pack
+(U+0080-U+024F and U+0370-U+04FF) produced by tools/font_subset.py; glyph
+data is unchanged. gbamp3 uses only the glyph lookup and UTF-8 helpers
+(player/src/text.c); the framebuffer routines are unused.

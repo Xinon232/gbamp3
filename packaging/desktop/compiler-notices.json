@@ -1,0 +1,14 @@
+{
+  "GCC-COPYING3.txt": {
+    "url": "https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-13.3.0/COPYING3",
+    "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+  },
+  "GCC-COPYING.RUNTIME.txt": {
+    "url": "https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-13.3.0/COPYING.RUNTIME",
+    "sha256": "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74"
+  },
+  "MinGW-w64-COPYING.txt": {
+    "url": "https://raw.githubusercontent.com/mingw-w64/mingw-w64/v12.0.0/COPYING",
+    "sha256": "99a69660981156c21336fdb5661f89341b013c94e4bf9e1c7467b4745718397f"
+  }
+}
