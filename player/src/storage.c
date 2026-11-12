@@ -74,12 +74,13 @@ void storage_close(void){if(opened){f_close(&file);opened=0;}indexes[0].checked=
  * fragmented file seeks the normal way. */
 static DWORD link_map[128];
 static unsigned map_tried;
+FRESULT (*storage_opener)(FIL *,const char *);
 int storage_open(const char *path){
  /* v2.2: the open song again (a seek, a restart): rewound, not reopened. */
  if(!(opened&&error!=-1&&!strcmp(path,open_path)&&f_lseek(&file,0)==FR_OK)){
   if(opened){FRESULT r=f_close(&file);opened=0;if(r!=FR_OK)return -1;}
   unsigned n=strlen(path);if(n>=STORAGE_PATH||memcmp(path,"0:/gbamp3/",10))return -2;
-  if(f_open(&file,path,FA_READ)!=FR_OK)return -1;
+  if((storage_opener?storage_opener(&file,path):f_open(&file,path,FA_READ))!=FR_OK)return -1;
   memcpy(open_path,path,n+1);opened=1;map_tried=0;
  }
  error=0;unsigned key=storage_key(path);open_key=key;

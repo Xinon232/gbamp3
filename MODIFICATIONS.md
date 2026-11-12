@@ -1,5 +1,80 @@
 # Modification record
 
+## 12.0 — Halim Jarrar, 2026-11-11
+
+Based on 11.0. No third-party source in this repository changed (gbaSD
+unchanged, 3ee9d37).
+
+- Folders while music plays (`folder.c`, `folder.h`): one pass reads a folder
+  when it is opened and fills every cursor bound to it (the list's folders
+  and songs, the queue's songs; the queue takes a listing over from the
+  list). The pass reads the folder's sectors itself on FAT16/32 and exFAT
+  (`pass_raw`; FatFs's f_readdir took 1.6 ms of processor time per
+  long-named entry on FAT32 and 2.7 ms on exFAT); an entry it does not take
+  as it is (other than ASCII in a short name, a surrogate pair, a name over
+  255 bytes, a torn exFAT entry set), a folder it cannot follow and FAT12 go
+  through f_readdir. `folder_yield()` (the audio service) runs before every
+  sector and every 24 levels of the sort (a bottom-up heapsort on 16-bit
+  words). A sort record ends in the entry's place in the folder (the entry
+  number, in pairs on exFAT) instead of its index, and each cursor keeps the
+  folder's cluster numbers (256, then every 2nd, 4th ...): a row is one seek
+  and one f_readdir. A folder too large for records keeps the places alone
+  in card order (every 2nd, 4th ... when they do not fit); over 65536 places
+  the checkpoints of 11.0 serve. The order is unchanged (the same folded key
+  length, then the card order).
+- `folder_keep` / `folder_open` (`storage_opener` in `storage.c`): the song
+  the queue resolved last is opened by its directory entry (gbaSD's
+  f_open_entry), for its tags (`load_meta`) and its audio, without a search
+  of its folder (0.7 to 1.4 s per song change in a folder of 2000).
+- Letter steps (L + Up / Down) in Folders take the letter from the sort key
+  the listing keeps (`folder_key`), not from the card (about 20 rows read
+  per step before).
+- `folder_changed()` after Rename, Delete (files, folder songs), tag
+  changes and conversions; `folder_count_path()` counts the songs of
+  another folder (Folder Options) while a folder plays.
+- `main.c`: `pump()` is not entered again from a yield inside the next-song
+  lookup; the playing folder's listing is read between frames
+  (`queue_dir_ready`), not inside the decoder.
+- `text.c`: `fold_point()` folds one code point (the pass folds names it holds
+  as UTF-16); `fold_next()` gives the same result as before.
+- Album cover long scan (`library.c`, `library.h`; Secret Settings row 9 in
+  `ui.c`; `main.c`; `state.c` / `state.h`): with `library_long_scan` 0 the
+  index is byte for byte as before (album_covers() unchanged). With 1,
+  `long_covers()` gives every song with a picture (MP3 JPEG, GAC cover) the
+  cover of its own picture, in record id order. Identical pictures share one
+  COVER_REC record: a picture key (length and FNV-1a of the first 1 KB and
+  last 512 bytes; a GAC's whole cover) finds a record without a decode, a
+  record key (FNV-1a, then the bytes compared) folds equal results; both in
+  a 1024-slot direct-mapped table in the last 8 KB of the sort buffer.
+  Unchanged files reuse the previous index's record (the one they provided,
+  or any of theirs when that index was built with the long scan).
+  `library_cover_rebuild` reuses none. State: `new_playlist_top` bit 3 the
+  switch, bit 4 how the index's covers were built (a difference sets the
+  rebuild; after a successful update bit 4 follows bit 3); values over 31
+  (was 7) are reset. Delete configuration / Delete library index are rows 10
+  and 11.
+- Memory: IWRAM end 0x03006de4 (unchanged), EWRAM end 0x0203e208 (11.0:
+  0x0203d0e8; the long scan's two switches: 8 bytes).
+- Tests (long scan): `tests/test_v12_long_scan.py` (host: Off byte for byte
+  as 46cb806, On per-song covers, shared records, rescan, rebuild) and
+  `tests/test_v12_long_scan_guest.py` (Now Playing, On and Off again).
+- Tests: `tests/test_v12_folder.c` / `.py` (host, in `run_host.py`) and
+  `tests/test_v12_folders_guest.py` (in `run_acceptance.py`), both failing on
+  11.0. Measured with 11.0 (3aa9b83) and 12.0, frames at 60 a second, all
+  four cart models, FAT32 and exFAT, MP3 and GAC:
+
+| folder | underruns 11.0 -> 12.0 | open (frames) 11.0 -> 12.0, MP3 / GAC | page wait | bottom/scroll wait | play+Next wait |
+|---|---|---|---|---|---|
+| 50 | 157 -> 0 | 42 / 41 -> 23 / 34 | 49 -> 22 | 28 -> 14 | 39 -> 14 |
+| 500 | 147 -> 0 | 318 / 315 -> 496 / 214 | 85 -> 27 | 30 -> 14 | 242 -> 15 |
+| 2000 | 331 -> 0 | 1149 / 1146 -> 1973 / 751 | 136 -> 31 | 31 -> 15 | 836 -> 14 |
+| 5000 | 546 -> 0 | 2764 / 2759 -> 4366 / 1621 | 547 -> 32 | 44 -> 15 | 1972 -> 15 |
+| 300 subfolders | 216 -> 0 | 183 / 184 -> 251 / 125 | 95 -> 26 | 38 -> 15 | 76 -> 75 |
+
+- Version 12.0: About page 1, CONTROLS.md / gbamp3-controls.pdf, README.md,
+  README.public.md, RELEASE_NOTES.md, BUILDING.md, the Windows converter
+  README, `.github/workflows/release.yml` (VERSION v12.0).
+
 ## 11.0 — Halim Jarrar, 2026-11-04
 
 Based on 10.0. No third-party source in this repository changed (the

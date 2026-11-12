@@ -1,4 +1,4 @@
-# gbamp3 11.0
+# gbamp3 12.0
 
 gbamp3 is a music player for the Game Boy Advance with an iPod-style
 interface. It plays MP3 files directly, or optional PC-prepared `.gac` audio
@@ -13,7 +13,7 @@ between MP3 and GAC on the GBA. Controls: [CONTROLS.md](CONTROLS.md) and
 [gbamp3-controls.pdf](gbamp3-controls.pdf). GAC caches and the PC
 converter: [CACHE.md](CACHE.md), [GAC_FORMAT.md](GAC_FORMAT.md).
 
-This repository holds the complete source code of gbamp3 11.0.
+This repository holds the complete source code of gbamp3 12.0.
 
 ## Licence
 
@@ -82,7 +82,7 @@ python3 -B player/build.py
 The ROM is `player/build/player.gba` (copy it to the card as `gbamp3.gba`).
 Intermediate files go to `player/build/`, `player/evidence/`, `tmp/` and
 `cache/`. A build of this tag with the toolchain above gives the ROM of the
-gbamp3 11.0 release byte for byte.
+gbamp3 12.0 release byte for byte.
 
 The generated tables are committed; their generators are in `tools/`:
 `tools/gac4.py` (GAC v4 decoder and encoder tables, needs numpy),

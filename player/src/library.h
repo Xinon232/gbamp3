@@ -46,8 +46,14 @@ int library_find(const char *path,uint32_t *id);
  * embedded JPEG), 64x64 RGB555 values. 0, or -1 when it has none. */
 int library_cover(uint32_t id,volatile uint16_t *out);   /* v1.8: 64x64 (a v4/v5 index's 32x32 doubled); out may be VRAM */
 extern unsigned library_cover_decodes;   /* pictures decoded by updates (tests, telemetry) */
+/* 12.0 Secret Settings > Album cover long scan, set by the caller before an
+ * update: 0 one cover per album (the index is byte for byte the 11.0/12.0
+ * one), 1 every song with a picture its own cover, identical pictures and
+ * covers sharing one record. library_cover_rebuild: decode every picture
+ * again (no record of the previous index is reused). */
+extern unsigned library_long_scan,library_cover_rebuild;
 /* Progress callback: phase 0 scanning (done = songs), 1..6 sorting, 7 album
- * covers (done = albums), 8 title word index (v1.2). Nonzero cancels. */
+ * covers (done = albums; 12.0 long scan: songs), 8 title word index (v1.2). Nonzero cancels. */
 typedef int (*LibraryProgress)(unsigned phase,unsigned done);
 /* Full rescan of /gbamp3. Unchanged files reuse their stored tags. Returns 0,
  * -1 on error (old library kept), -2 cancelled (old library kept). */

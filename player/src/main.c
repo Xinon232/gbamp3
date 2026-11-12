@@ -201,7 +201,7 @@ static const char *base_name(const char *p){const char *b=p;for(;*p;p++)if(*p=='
 static void load_meta(const char *path,struct NowPlaying *n){
  n->valid=0;unsigned k=strlen(path);if(k>=STORAGE_PATH)return;
  memcpy(n->path,path,k+1);n->key=storage_key(path);
- if(f_open(&metaf,path,FA_READ)!=FR_OK){memset(&n->meta,0,sizeof(n->meta));return;}
+ if(folder_open(&metaf,path)!=FR_OK){memset(&n->meta,0,sizeof(n->meta));return;}
  meta_read(&metaf,base_name(path),&n->meta);
  f_close(&metaf);n->valid=1;
  /* v0.9.8: album covers come from the library (v2.1: GAC songs' too,
@@ -287,9 +287,17 @@ static void stop_at_block(void){
  unsigned end=wr;for(unsigned j=0;j<16;j++)append(prevL,prevR);
  transition_end=end;
 }
+/* 12.0: the folder code yields before every entry it reads (folder.c). At a
+ * song's end the next one is looked up from here (queue_next): a yield
+ * from that lookup must not decode, or take the queue a second step. */
+static unsigned in_pump;
+static void pump_step(void);
 static void pump(void){
  input_poll((uint16_t)(~R16(0x4000130)&0x3ff));   /* long prefills must not swallow taps */
- if(stats.fatal||transition_end)return;
+ if(stats.fatal||transition_end||in_pump)return;
+ in_pump=1;pump_step();in_pump=0;
+}
+static void pump_step(void){
  if(!decode_frame(0)&&!stats.fatal){
   if(!has_prev){stats.fatal=203;return;}
   /* Endpoint hold to the rational frame-duration boundary, no gap/silence cache. */
@@ -460,6 +468,10 @@ void player_file_ops_toggle(unsigned bit){app.flags^=(uint8_t)(bit<<1);state_dir
  * new_playlist_top set = Off (one short START unlocks). */
 unsigned player_hold_unlock(void){return !(app.new_playlist_top&2u);}
 void player_hold_unlock_toggle(void){app.new_playlist_top^=2u;state_dirty=1;}
+/* 12.0 Album cover long scan: bit 3 the setting, bit 4 how the covers of the
+ * index were built; a difference makes the next Update Library rebuild all. */
+unsigned player_cover_scan(void){return (app.new_playlist_top>>3)&1u;}
+void player_cover_scan_toggle(void){app.new_playlist_top^=8u;state_dirty=1;}
 static struct DirCursor queue_dir;static int resolve(const struct QueueSource *src,uint32_t i,char *out);
 /* v1.9: renaming or deleting files first stops playback and forgets the
  * current song and its list (no file of the card stays open); the Play
@@ -484,6 +496,7 @@ static int moved(const char *p,const char *old,const char *new,unsigned dir,char
 static FRESULT del(const char *path){
  (void)library_repair_folder_of(path);FRESULT r=f_unlink(path);
  if(r==FR_INT_ERR&&library_repair_folder_of(path)>0)r=f_unlink(path);
+ folder_changed();   /* 12.0: folder listings keep places on the card */
  return r;
 }
 /* Play Next and playlists follow a new name (-2: playlists not updated). */
@@ -497,7 +510,7 @@ int player_rename(const char *old,const char *new,unsigned dir){
  player_stop_all();
  {extern void disk_index_writes(unsigned);disk_index_writes(1);(void)library_repair_folder_of(old);FRESULT r=f_rename(old,new);
   if(r==FR_INT_ERR&&library_repair_folder_of(old)>0)r=f_rename(old,new);   /* v2.2 exFAT: torn entry set */
-  disk_index_writes(0);if(r!=FR_OK)return -1;}
+  disk_index_writes(0);folder_changed();if(r!=FR_OK)return -1;}
  return follow_paths(old,new,dir);   /* -2: renamed, playlists not updated */
 }
 /* v2.0 conversion: `old` was converted to `new` (checked): delete `old`;
@@ -511,7 +524,7 @@ int player_replace_original(const char *old,const char *new){
 int player_tag_set(const char *path,unsigned field,const char *text){
  unsigned n;uint8_t *b=library_scratch(&n);   /* idle: Update Library follows */
  extern void disk_index_writes(unsigned);disk_index_writes(1);int r=tag_set(path,field,text,b,n);disk_index_writes(0);
- player_service();return r;
+ folder_changed();player_service();return r;
 }
 /* Conversion (MP3 -> GAC, v2.0 also GAC -> MP3 by the source's extension): music stops; the library scratch area holds the
  * converter's work memory, the cover and the tags (Update Library follows). */
@@ -531,7 +544,7 @@ static int convert_gac(const char *src,const char *dst,convert_poll_fn poll,void
  extern void disk_index_writes(unsigned);disk_index_writes(1);(void)library_repair_folder_of(dst);   /* v2.2 exFAT: NAME.part etc. go there */
  int r=convert_gac_to_mp3(src,dst,z,(int16_t*)(void*)ringL,(int16_t*)(void*)ringR,RING/2u,conv_use_gac,conv_poll,0);
  decoder_use(DECODER_MP3);
- disk_index_writes(0);
+ disk_index_writes(0);folder_changed();
  stats.conv_cycles+=ticks()-conv_tick;stats.conv_frames=convert_stats.frames_in;stats.conv_result=(uint32_t)r;
  return r;
 }
@@ -548,7 +561,7 @@ int player_convert(const char *src,const char *dst,convert_poll_fn poll,void *ct
  extern void disk_index_writes(unsigned);disk_index_writes(1);(void)library_repair_folder_of(dst);   /* v2.2 exFAT: NAME.part etc. go there */
  int r=convert_mp3_to_gac(src,dst,m,has_art?art:0,z,(int16_t*)(void*)ringL,(int16_t*)(void*)ringR,RING/2u,conv_use,conv_poll,0);
  decoder_use(DECODER_MP3);
- disk_index_writes(0);
+ disk_index_writes(0);folder_changed();
  stats.conv_cycles+=ticks()-conv_tick;stats.conv_frames=convert_stats.frames_out;stats.conv_result=(uint32_t)r;
  return r;
 }
@@ -573,7 +586,7 @@ int player_delete_folder(const char *dir,unsigned *n,unsigned *kept){
   (*n)++;player_service();
  }
  if(!err&&f_unlink(dir)==FR_OK)*kept=0;   /* fails while other files or folders remain */
- disk_index_writes(0);return err;
+ disk_index_writes(0);folder_changed();return err;
 }
 /* v1.9 Sleep: with nothing playing, the lock screen stops the GBA (BIOS
  * Stop: processor, display, sound and timers halt, about as little power as
@@ -630,7 +643,14 @@ void player_sleep(void){
  R16(0x4000208)=1;
  input_reset((~R16(0x4000130))&1023);   /* START is still held: no stale taps */
 }
-unsigned player_folder_count(const char *path){folder_bind(&queue_dir,path,FOLDER_SONGS);int n=folder_count(&queue_dir);return n>0?(unsigned)n:0;}
+/* 12.0: while a folder plays, another folder's songs are counted without
+ * the queue's listing (reading it again would wait for the next song). */
+unsigned player_folder_count(const char *path){
+ int n;
+ if(queue_source()->kind==QUEUE_FOLDER&&started&&!ended&&strcmp(queue_source()->text,path))n=folder_count_path(path,FOLDER_SONGS);
+ else{folder_bind(&queue_dir,path,FOLDER_SONGS);n=folder_count(&queue_dir);}
+ return n>0?(unsigned)n:0;
+}
 int player_resolve(const struct QueueSource *src,uint32_t i,char *out){
  if(src->kind==QUEUE_SINGLE){unsigned k=strlen(src->text);if(i||k>=STORAGE_PATH)return -1;memcpy(out,src->text,k+1);return 0;}
  return resolve(src,i,out);
@@ -700,7 +720,9 @@ static void lib_hash_build(void){
 int player_update_library(LibraryProgress cb){
  audio_stop();
  unsigned t=ticks();
+ library_long_scan=player_cover_scan();library_cover_rebuild=library_long_scan!=((app.new_playlist_top>>4)&1u);
  int e=library_update(cb);
+ if(!e&&library_cover_rebuild){app.new_playlist_top^=16u;state_dirty=1;}   /* 12.0: built as set */
  /* v0.9.8 telemetry: update time (covers included), pictures decoded. */
  stats.update_cycles=ticks()-t;stats.cover_decodes=library_cover_decodes;stats.library_songs=library_count();
  /* The cover decoder used the decoder overlay: bring the song's decoder back.
@@ -749,10 +771,21 @@ static int resolve(const struct QueueSource *src,uint32_t i,char *out){
  if(src->kind==QUEUE_FOLDER){
   if(strcmp(queue_dir.path,src->text)||queue_dir.kind!=FOLDER_SONGS)folder_bind(&queue_dir,src->text,FOLDER_SONGS);
   static char name[STORAGE_PATH];if(folder_name(&queue_dir,i,name,sizeof(name)))return -1;
-  return folder_join(out,src->text,name)?0:-1;
+  if(!folder_join(out,src->text,name))return -1;
+  folder_keep(&queue_dir,out);return 0;   /* 12.0: opened without a search of the folder */
  }
  if(src->kind==QUEUE_PLAYLIST){if(playlist_entry(src->playlist,i,&resolve_entry)||!resolve_entry.path[0]||!resolve_entry.valid)return -1;   /* missing file: skipped */memcpy(out,resolve_entry.path,STORAGE_PATH);return 0;}
  return -1;
+}
+/* 12.0: the listing of the folder that plays is read here, between frames
+ * (the audio is fed meanwhile), not at the song's end inside the decoder:
+ * after another folder was listed through it (Play Next of a folder), a
+ * Show Songs change or Update Library. */
+static void queue_dir_ready(void){
+ const struct QueueSource *s=queue_source();
+ if(s->kind!=QUEUE_FOLDER||!started||ended||stats.fatal)return;
+ if(strcmp(queue_dir.path,s->text)||queue_dir.kind!=FOLDER_SONGS)folder_bind(&queue_dir,s->text,FOLDER_SONGS);
+ folder_prepare(&queue_dir);
 }
 /* Called from long UI/library work: latch keys, decode only when the buffer
  * is getting low (4096 samples: 0.5 s of MP3 output, 93 ms at 44151 Hz). */
@@ -828,7 +861,7 @@ static unsigned new_frame(void){
 int main(void){R16(0x4000208)=0;R16(0x4000204)=0x40c0;R16(0x400010a)=0;R16(0x400010e)=0;R16(0x4000108)=0;R16(0x400010c)=0;R16(0x400010e)=0x84;R16(0x400010a)=0x80;
  unsigned sp;__asm__ volatile("mov %0,sp":"=r"(sp));for(unsigned p=(unsigned)&__iwram_end;p<((sp-128)&~3u);p+=4)R32(p)=0xa55aa55a;for(unsigned p=0x3007e00;p<0x3007fa0;p+=4)R32(p)=0x5aa55aa5;
  stats.magic=0x5254504c;stats.min_queue=0xffffffffu;stats.clock_base=1536;stats.clock_rem=0;stats.paused=1;stats.sound_mode=3;stats.cache_sound_mode=3;stats.output_mode=0;
- queue_resolve=resolve;folder_yield=player_service;
+ queue_resolve=resolve;folder_yield=player_service;storage_opener=folder_open;
  app.stereo=1;menu_order_reset(&app.menus);
  {unsigned n;uint8_t *z=library_scratch(&n);folder_sort_area(&queue_dir,z+n/2+n/8,n/2-n/8);}   /* 24 KB */
  ui_init();
@@ -881,6 +914,7 @@ int main(void){R16(0x4000208)=0;R16(0x4000204)=0x40c0;R16(0x400010a)=0;R16(0x400
    unsigned keys=poll_keys()|key_latched;key_latched=0;R16(0x4000208)=ime;
    struct InputFrame in;input_frame((uint16_t)keys,elapsed,&in);
    unsigned a=ticks();ui_frame(&in);stats.ui_cycles+=ticks()-a;
+   queue_dir_ready();
    static unsigned frames;if(!(++frames&7))memory_check();
   }
   if((state_dirty||queue_pn_changed())&&!stats.fatal&&(stats.paused||wr-rd>=FILL-1024u)&&ticks()-state_last>2u*16777216u){

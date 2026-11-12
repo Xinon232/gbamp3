@@ -2,7 +2,7 @@
 
 Made by Halim Jarrar, (C) 2026. halimj.itch.io / gba@halim-jarrar.de.
 
-gbamp3 11.0: an iPod-style music player for the Game Boy Advance. MP3 and GAC v4 caches, a music library built on the GBA itself with album covers, playlists, search, one Stereo/Mono setting, an optional Volume Boost, and conversion between MP3 and GAC on the GBA. Hardware testing pending.
+gbamp3 12.0: an iPod-style music player for the Game Boy Advance. MP3 and GAC v4 caches, a music library built on the GBA itself with album covers, playlists, search, one Stereo/Mono setting, an optional Volume Boost, and conversion between MP3 and GAC on the GBA. Hardware testing pending.
 
 Put MP3 files, .gac caches and folders beneath /gbamp3 on the SD card. MP3 needs no conversion. GAC caches are prepared on a PC with the supplied converter (see CACHE.md). The GBA changes song files only when you ask it to (Rename, Delete or Convert, all Off unless switched on in Secret Settings); otherwise it writes only its own library, playlist and settings files in its folder /gbamp3/GBAMP3.SYS (visible on a PC; Folders and Update Library leave it out). No demo music is embedded.
 
@@ -13,7 +13,7 @@ Put MP3 files, .gac caches and folders beneath /gbamp3 on the SD card. MP3 needs
 - Storage: SD card formatted FAT16, FAT32 or exFAT, of any size up to 2 TB.
 - Long file and folder names (UTF-8) are supported. Paths may be up to 255 bytes. Latin, Greek and Cyrillic letters are shown; other scripts show a placeholder.
 - Tags: ID3v2.2/2.3/2.4 (all text encodings) and ID3v1 are read on the GBA; GAC files carry their tags from the converter. A missing title shows the filename without its extension; missing artist, album or genre show Unknown Artist, Unknown Album or Unknown Genre.
-- MP3 covers: Update Library reads the embedded front cover (ID3 APIC/PIC, JPEG) of the first song of each album that has one and shows it for every MP3 of that album. Baseline JPEG up to 256 KB and 1600x1600 pixels; PNG, progressive JPEG and larger pictures are skipped (no cover). Songs without an album tag show no cover. GAC songs use their album's cover too. Covers: 64x64 pixels, up to 240 colours. After updating to v2.1, run Update Library once.
+- MP3 covers: Update Library reads the embedded front cover (ID3 APIC/PIC, JPEG) of the first song of each album that has one and shows it for every MP3 of that album. Baseline JPEG up to 256 KB and 1600x1600 pixels; PNG, progressive JPEG and larger pictures are skipped (no cover). Songs without an album tag show no cover. GAC songs use their album's cover too. With Secret Settings > Album cover long scan On, every song with a picture shows its own. Covers: 64x64 pixels, up to 240 colours. After updating to v2.1, run Update Library once.
 
 ## Buttons everywhere
 
@@ -31,7 +31,7 @@ Put MP3 files, .gac caches and folders beneath /gbamp3 on the SD card. MP3 needs
 ## Home
 
 - Initially: Now Playing, Playlists, Folders, Search, Artists, Albums, Genres, Songs. With menu reordering enabled, their positions can change without changing their actions.
-- Folders shows the card as it is, with literal file names, folders first, then songs, each alphabetical. It works without a library.
+- Folders shows the card as it is, with literal file names, folders first, then songs, each alphabetical. It works without a library. A folder is read once when it is opened (a folder of thousands of songs takes a few seconds while music plays; the music keeps playing).
 - Artists, Albums, Genres, Songs and Search use the library. Before the first Update Library they show No music found.
 - Artists opens an artist's All Songs or Albums. Albums lists songs by disc and track number. Genres lists songs by title.
 - Sorting is alphabetical, ignoring case and accents (as in GBAVocab). Unknown entries sort last.
@@ -119,7 +119,7 @@ Songs, Artists, Albums, Genres, an artist's or album's list, Folders, playlists 
 
 - SELECT opens Settings from any screen except Search and naming a playlist. B returns to the screen you came from.
 - Playback Mode (first row): Normal, Repeat All, Repeat One, Shuffle; A changes it.
-- Update Library: scans every folder under /gbamp3 and rebuilds the library on the GBA. Manual only; playback stops while it runs. Unchanged files reuse their stored tags and covers. Modeled SD card: about 60 ms per song plus 0.5-5 s per album cover; libraries older than v2.1 are not used.
+- Update Library: scans every folder under /gbamp3 and rebuilds the library on the GBA. Manual only; playback stops while it runs. Unchanged files reuse their stored tags and covers. Modeled SD card: about 60 ms per song plus 0.5-5 s per album cover (Album cover long scan On: per different picture); libraries older than v2.1 are not used.
 - Convert all (only while Secret Settings > Conversion is on and the library has a song to convert): converts every song of that type. See Conversion below.
 - Output: Stereo (default) or Mono, for MP3 and GAC alike.
 - Volume Boost: Off (default) or On. On starts at 0 dB; set the level with Up / Down in Now Playing. Turning it off returns to 0 dB. Loud peaks are softened by a limiter instead of clipping; quiet recordings gain the most.
@@ -138,6 +138,7 @@ Songs, Artists, Albums, Genres, an artist's or album's list, Folders, playlists 
 - Delete files: Off (default) / On. On adds Delete to Song Options and to album, artist, genre and folder options.
 - Conversion: Off (default) / MP3>GAC / GAC>MP3; A changes it. MP3>GAC adds Convert to GAC, GAC>MP3 adds Convert to MP3, wherever there is a song to convert: Song Options, album, artist, genre, folder and playlist options, and Settings > Convert all.
 - Hold START to unlock: On (default) / Off. On: START unlocks only when held 1 s (the screen stays black until then); a shorter press does nothing (a sleeping GBA sleeps again). Off: one START press unlocks.
+- Album cover long scan: Off (default) / On. Off: one cover per album, from its first song with a usable picture. On: Update Library reads every song's own picture (MP3 or GAC), so songs of one album with different pictures and songs without an album tag show their own; identical pictures are stored once. Update Library then takes longer. After switching it either way, the next Update Library (also Auto-update at start) reads every cover again.
 - Delete configuration: first A replaces that row with Sure?; a second A executes. B, moving away, or A+B cancels the question and stays in Secret Settings. This removes only /gbamp3/GBAMP3.SYS/STATE0.DAT, STATE1.DAT, QUEUE0.DAT and QUEUE1.DAT. The current song and Play Next are discarded; settings and menu orders reset to defaults. Playlist and music files remain.
 - Delete library index: the same confirmation and cancellation rules. This removes only /gbamp3/GBAMP3.SYS/LIB0.IDX, LIB1.IDX, QUEUE0.DAT and QUEUE1.DAT. The current song and Play Next are discarded; unrelated settings and menu orders are saved. After restarting, use Update Library to restore library browsing. Folder browsing and playlists remain available.
 - On success, the app says `Deletion succeeded. Restart system now.` No button works until you physically restart. A failure or partial removal instead says `Deletion failed. Restart system now.` and also locks the app; it never claims success. Missing files count as already absent. On a partial failure an older surviving slot may load after restart: inspect the card before retrying. The GBAMP3.SYS folder, music, GAC, playlist and unlisted files are never deletion targets.
@@ -176,7 +177,7 @@ Host tests run the production library, folder, queue, playlist, settings and tex
 
 ## About / licence
 
-gbamp3 11.0. Copyright (C) 2026 Halim Jarrar. halimj.itch.io / gba@halim-jarrar.de.
+gbamp3 12.0. Copyright (C) 2026 Halim Jarrar. halimj.itch.io / gba@halim-jarrar.de.
 
 gbamp3 is free software, licensed under the GNU General Public License version 3 or later (GPL-3.0-or-later), with an additional permission for linking with the Helix MP3 decoder (the text is in NOTICES.md). The Helix MP3 decoder is licensed under the RealNetworks Public Source License 1.0. No warranty: gbamp3 is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY.
 

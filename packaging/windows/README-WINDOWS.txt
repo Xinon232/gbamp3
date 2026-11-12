@@ -1,4 +1,4 @@
-GAC Converter for Windows x64 — gbamp3 11.0
+GAC Converter for Windows x64 — gbamp3 12.0
 
 1. Extract this ZIP fully (keep ffmpeg.exe next to GAC-Converter.exe).
    Run GAC-Converter.exe. Python, Tk, numpy and ffmpeg.exe are included;

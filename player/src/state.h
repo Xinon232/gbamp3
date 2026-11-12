@@ -15,7 +15,7 @@ struct AppState {
  /* v1.8 Secret Settings, in what was struct padding (0 in older files):
   * Show Songs 0 MP3 + GAC, 1 only MP3, 2 only GAC; + New Playlist on top;
   * letter box off. */
- uint8_t song_types,new_playlist_top,flags;   /* new_playlist_top: bit 0 New Playlist on top, v2.2: bit 1 Hold START to unlock Off (clear, the default and in older files: On), 11.0: bit 2 + Add Songs on top of playlists; flags: bit 0 letter box off, v1.9: bit 1 Rename files on, bit 2 Delete files on; bit 7 (11.0) Hold START to unlock was reset to On once (v2.2 test build: Hold START to unlock on; cleared on loading by 10.0) */
+ uint8_t song_types,new_playlist_top,flags;   /* new_playlist_top: bit 0 New Playlist on top, v2.2: bit 1 Hold START to unlock Off (clear, the default and in older files: On), 11.0: bit 2 + Add Songs on top of playlists, 12.0: bit 3 Album cover long scan On (clear, the default and in older files: Off), bit 4 the library's covers were built with the long scan (bit 3 != bit 4: the next Update Library rebuilds every cover); flags: bit 0 letter box off, v1.9: bit 1 Rename files on, bit 2 Delete files on; bit 7 (11.0) Hold START to unlock was reset to On once (v2.2 test build: Hold START to unlock on; cleared on loading by 10.0) */
 };
 #define STATE_HOLD_RESET_DONE 0x80u
 /* Defaults on missing/corrupt files. Returns 1 when a saved state was read. */

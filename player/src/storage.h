@@ -12,6 +12,9 @@ int storage_cache_seek(unsigned seconds,unsigned *sample);
 /* Position at the block holding frame `frame` (clamped to the last frame). */
 int storage_cache_seek_frame(unsigned frame,unsigned *sample);
 int storage_init(void);
+/* 12.0: opens a song for reading in place of f_open when set (folder_open: a
+ * song of a folder queue is opened by its place, without a search of the folder). */
+extern FRESULT (*storage_opener)(FIL *, const char *);
 FATFS *storage_fs(void);   /* v2.2: the mounted volume (exFAT repair) */
 /* Stable identity of a path (covers, seek points, UI). Never zero. */
 unsigned storage_key(const char *path);

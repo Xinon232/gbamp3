@@ -234,17 +234,23 @@ void small_draw(int x,int y,const char *s,uint16_t color){
 
 /* ---- folding (port of GBAVocab dictionary_fold::Iterator) ---- */
 void fold_init(struct Fold *f,const char *s){f->p=s;f->latin=0;}
+/* 12.0: one code point folded (the folder listing folds names it holds as
+ * UTF-16). 0: dropped, a combining accent after a Latin letter. */
+uint32_t fold_point(struct Fold *f,uint32_t c){
+ if(f->latin&&c>=0x300&&c<=0x36f)return 0;
+ if(c>=0xc0&&c<=0x1eff){unsigned lo=0,hi=FOLD_MAPPINGS;
+  while(lo<hi){unsigned m=(lo+hi)/2;if(fold_mappings[m].from<c)lo=m+1;else hi=m;}
+  if(lo<FOLD_MAPPINGS&&fold_mappings[lo].from==c)c=fold_mappings[lo].to;}
+ if(c>='A'&&c<='Z')c+=32;
+ else if((c>=0x391&&c<=0x3a9)||(c>=0x410&&c<=0x42f))c+=32;   /* Greek, Cyrillic capitals */
+ else if(c>=0x400&&c<=0x40f)c+=80;
+ f->latin=c>='a'&&c<='z';return c;
+}
 uint32_t fold_next(struct Fold *f){
  for(;;){
   uint32_t c=text_next(&f->p);
-  if(f->latin&&c>=0x300&&c<=0x36f)continue;
-  if(c>=0xc0&&c<=0x1eff){unsigned lo=0,hi=FOLD_MAPPINGS;
-   while(lo<hi){unsigned m=(lo+hi)/2;if(fold_mappings[m].from<c)lo=m+1;else hi=m;}
-   if(lo<FOLD_MAPPINGS&&fold_mappings[lo].from==c)c=fold_mappings[lo].to;}
-  if(c>='A'&&c<='Z')c+=32;
-  else if((c>=0x391&&c<=0x3a9)||(c>=0x410&&c<=0x42f))c+=32;   /* Greek, Cyrillic capitals */
-  else if(c>=0x400&&c<=0x40f)c+=80;
-  f->latin=c>='a'&&c<='z';return c;
+  if(!c){f->latin=0;return 0;}
+  if((c=fold_point(f,c)))return c;
  }
 }
 int fold_compare(const char *a,const char *b,int prefix){

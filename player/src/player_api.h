@@ -67,6 +67,8 @@ void player_conversion_toggle(void);
  * START unlocks only when held 1 s (lock screen and sleep). */
 unsigned player_hold_unlock(void);
 void player_hold_unlock_toggle(void);
+unsigned player_cover_scan(void);          /* 12.0 Album cover long scan */
+void player_cover_scan_toggle(void);
 unsigned player_ticks(void);               /* 16.78 MHz free-running counter (wraps after 256 s) */
 int player_replace_original(const char *old,const char *new_path);   /* v2.0: after a conversion */
 /* v2.0 conversion: keys down now or since the last call; the first call

@@ -267,7 +267,8 @@ static void row(const struct Screen *s,uint32_t i,char *out,unsigned cap,uint8_t
    i==4?(player_file_ops()&1?"Rename files: On":"Rename files: Off"):i==5?(player_file_ops()&2?"Delete files: On":"Delete files: Off"):
    i==6?(player_conversion()==1?"Conversion: MP3>GAC":player_conversion()==2?"Conversion: GAC>MP3":"Conversion: Off"):
    i==7?(player_hold_unlock()?"Hold START to unlock: On":"Hold START to unlock: Off"):
-   i==8?"Delete configuration":"Delete library index";break;}
+   i==8?(player_cover_scan()?"Album cover long scan: On":"Album cover long scan: Off"):
+   i==9?"Delete configuration":"Delete library index";break;}
   case T_CONFIRM:t=i?"Yes":"No";break;
   case T_SONGS:case T_SEARCH:{uint32_t id;
    if(list_song_id(s,i,&id)||library_song(id,&song)){t="?";break;}
@@ -523,7 +524,7 @@ static void draw_info(struct Screen *s){
 #define ABOUT_PAGES 8
 static const char *const about_titles[ABOUT_PAGES]={"About","Controls","License","MP3 decoder","SD card and files","Text and fonts","More credits","Secret Settings"};
 static const char *const about_pages[ABOUT_PAGES][8]={
- {"gbamp3 11.0","(c) 2026 Halim Jarrar","","GPL-3.0-or-later with","Helix linking permission","No warranty.","Source:","github.com/Xinon232/gbamp3"},
+ {"gbamp3 12.0","(c) 2026 Halim Jarrar","","GPL-3.0-or-later with","Helix linking permission","No warranty.","Source:","github.com/Xinon232/gbamp3"},
  {"Start: Options   Select: Settings","A: Open / Play   B: Back","L+R: Lock   Start: Unlock","Now Playing: Left / Right","tap: prev / next, hold: seek","Up / Down: Volume Boost level","Playlist: hold A + Up / Down","Search: Start + A B L R Up Down"},
  {"gbamp3 is free software under","the GNU GPL version 3 or later,","with an additional permission","for linking with the Helix MP3","decoder (see NOTICES.md).","Contact: halimj.itch.io","gba@halim-jarrar.de","Credits: next pages."},
  {"Helix MP3 decoder","Helix DNA Client technology","included. (c) 1995-2002","RealNetworks, Inc.","All rights reserved.","License: RPSL 1.0","By Jon Recker and Ken Cooke;","Arduino version: Phil Schatzmann"},
@@ -675,7 +676,8 @@ static int entry_key(struct Screen *s,uint32_t i,uint32_t *key,char *label){
  else if(s->type==T_GROUPS){if(library_group(s->p0,s->p1+i,&group)||library_song(group.rep,&song))return -1;
   t=s->p0==GROUP_ARTISTS?song.artist:s->p0==GROUP_GENRES?song.genre:song.album;}
  else if(s->type==T_FOLDER){unsigned d=dir_count();
-  if(i<d?folder_name(&dirs,i,name_buf,sizeof(name_buf)):folder_name(&songs,i-d,name_buf,sizeof(name_buf)))return -1;
+  /* 12.0: the letter of the folded key the folder listing keeps (no card read); folding it again keeps its first letter. */
+  if(i<d?folder_key(&dirs,i,name_buf,sizeof(name_buf))&&folder_name(&dirs,i,name_buf,sizeof(name_buf)):folder_key(&songs,i-d,name_buf,sizeof(name_buf))&&folder_name(&songs,i-d,name_buf,sizeof(name_buf)))return -1;
   t=name_buf;run=i>=d;}   /* folders first, then songs: each run alphabetical */
  else return -1;
  uint32_t k=fold_group(t,label);*key=run?(k==GROUP_UNKNOWN?k:0x80000000u|k):k;return 0;
@@ -863,7 +865,7 @@ static void enter(struct Screen *s){
   case T_ARTIST:s->count=2;break;
   case T_OPTIONS:s->p2=options_current(s);s->count=option_count(s);break;
   case T_PLOPTIONS:s->p2=coll_convertible();s->count=6+s->p2;break;   /* v1.9; v2.0 p2: Convert shown; 11.0: no Add to Playlist */
-  case T_SECRET:s->count=10;break;
+  case T_SECRET:s->count=11;break;
   case T_COPTIONS:coll_conv=coll_convertible();s->count=coll_count();break;
   case T_CONFIRM:s->count=2;break;
   case T_FOLDER:folder_bind(&dirs,s->path,FOLDER_DIRS);folder_bind(&songs,s->path,FOLDER_SONGS);{int a=folder_count(&dirs),b=folder_count(&songs);s->count=(a>0?(unsigned)a:0)+(b>0?(unsigned)b:0);}break;
@@ -1291,17 +1293,17 @@ static void open_settings(void){
 }
 /* Secret Settings rows: 0 Reorder menus, 1 Auto-update library (v1.5),
  * 2 Show Songs, 3 Letter Box (v1.8), 4 Rename files, 5 Delete files
- * (v1.9), 6 Conversion (v2.0), 7 Hold START to unlock (v2.2), 8 Delete
- * configuration, 9 Delete library index.
+ * (v1.9), 6 Conversion (v2.0), 7 Hold START to unlock (v2.2), 8 Album
+ * cover long scan (12.0), 9 Delete configuration, 10 Delete library index.
  * p0 = the row asking "Sure?", SECRET_NONE when none; p1 =
  * Show Songs when the screen opened (a change runs Update Library on B). */
 #define SECRET_NONE 15
 static void secret_activate(struct Screen *s,uint32_t i){
- if(i<8){if(i==0)player_menu_toggle();else if(i==1)player_auto_update_toggle();else if(i==2)player_song_types_next();else if(i==3)player_letter_box_toggle();else if(i==6)player_conversion_toggle();else if(i==7)player_hold_unlock_toggle();else player_file_ops_toggle(i==4?1u:2u);
+ if(i<9){if(i==0)player_menu_toggle();else if(i==1)player_auto_update_toggle();else if(i==2)player_song_types_next();else if(i==3)player_letter_box_toggle();else if(i==6)player_conversion_toggle();else if(i==7)player_hold_unlock_toggle();else if(i==8)player_cover_scan_toggle();else player_file_ops_toggle(i==4?1u:2u);
   invalidate_rows();cache_page(s);row_dirty|=1u<<(s->sel-s->top);}
  else if(s->p0!=i){s->p0=i;invalidate_rows();cache_page(s);row_dirty|=1u<<(s->sel-s->top);}
  else{
-  int e=i==8?player_delete_configuration():player_delete_library();
+  int e=i==9?player_delete_configuration():player_delete_library();
   /* An unlink may partly succeed even when the operation reports failure.
    * Discard every old screen and accept no more input until power cycling. */
   restart_failed=e!=0;message=0;message_frames=0;depth=0;push(T_RESTART,0);

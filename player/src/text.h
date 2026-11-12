@@ -38,5 +38,6 @@ int fold_compare(const char *a, const char *b, int prefix);
  * to exactly `cap` bytes; unsigned byte order equals fold_compare order for
  * keys that fit. Returns bytes used. */
 size_t fold_key(char *dst, size_t cap, const char *src);
+uint32_t fold_point(struct Fold *f, uint32_t c);   /* 12.0: one code point; 0: dropped */
 /* Append one scalar as UTF-8; returns bytes written (0 if it does not fit). */
 size_t utf8_put(char *dst, size_t cap, uint32_t code);
