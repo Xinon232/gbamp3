@@ -48,9 +48,36 @@ header fields, seek bounds, metadata validity/checksum and artwork checksum.
 
 Callbacks are observational: exceptions are ignored so a closing GUI cannot
 turn a completed conversion into an ambiguous failure. Notifications are monotone
-and capped at 101 per file. FFmpeg stages report their phase; GAC encoding,
-packing and reverse decoding report measured work fractions. Stop-after-current
-is a batch/UI policy, not mid-file cancellation.
+and capped at 101 per file. FFmpeg stages report their phase; GAC encoding
+(against the duration FFmpeg reports) and reverse decoding report measured work
+fractions. Stop-after-current is a batch/UI policy; `convert` and
+`reverse_convert` also take `cancel`, a callable polled while they work: when
+it returns True they raise `Cancelled` and change no file (the window's Cancel
+now button and closing it while busy; Ctrl+C on the command line).
+
+## Long files (converter 3.2)
+
+Memory does not grow with the length of a song. `convert` reads FFmpeg's PCM
+from a pipe in 1 MiB pieces (a reader thread keeps up to 8 ahead, so decoding
+overlaps encoding) and feeds `gac4.StreamEncoder`, which codes groups of
+segments (64; 32 in worker processes) from their own PCM window and returns
+finished blocks; they go to an unnamed temporary file in the output folder,
+then the header, seek table and blocks are written to the staging file. Files
+over about five minutes are coded in up to four spawned worker processes
+(`GBACACHE_WORKERS` sets the number; 1 codes in the calling process; frozen
+builds call `multiprocessing.freeze_support()` first). Segments are coded
+independently, so the bytes do not depend on group size, pieces or workers:
+`tests/test_converter_stream.py` checks them against hashes made by 3.1's
+whole-file encoder. GAC -> MP3 pipes decoded blocks to LAME and reads the
+verification decode as it comes.
+
+The player accepts at most 0x7fffffff frames (18.2 hours at 32768 Hz, 13.5
+hours at 44151 Hz) and (0x7fffffff - seek) / 1024 / 2 blocks (1048571 with a
+64x64 cover: about 1 GiB of audio). `convert` raises `TooLong` ("too long for
+gbamp3: about N hours max at this rate") before decoding when FFmpeg's
+reported duration is over the frame limit, after the first tenth when the
+blocks so far project more than 1.25 times the block limit, and in any case as
+soon as either limit is passed.
 
 ## Optional native helper
 

@@ -12,7 +12,10 @@ GAC Converter for Windows x64 — gbamp3 12.0
    without it they are skipped.
 5. Rate: unchecked selects 32768 Hz. Select 44,150.6 Hz for the best stereo
    quality. Check Mono for files about 30% smaller that always play mono.
-   Converting takes roughly a minute per four-minute song.
+   Converting takes roughly a minute per four-minute song. Recordings of
+   hours work (memory does not grow with the length); one GAC holds at most
+   18.2 hours at 32768 Hz, 13.5 hours at 44151 Hz. Cancel now stops the
+   current song without changing any file.
 6. Convert, then copy the .gac files beneath /gbamp3 on your card.
    These are GAC v4 files: they need gbamp3 v0.9.0 or later, which plays only
    GAC v4. Older .gac files show OLD GAC - RECONVERT; convert them again from

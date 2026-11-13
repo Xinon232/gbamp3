@@ -1,4 +1,4 @@
-gbamp3 converter 3.1 — GAC Converter
+gbamp3 converter 3.2 — GAC Converter
 
 No Python, FFmpeg installation, compiler, or normal terminal commands are needed.
 This is a portable desktop application. Extract the ENTIRE archive before use;
@@ -24,6 +24,9 @@ Use Add songs or Add folder. Switch direction beside MP3 → GAC to decode GAC
 back to MP3. Choose an output option, then start. Defaults preserve originals.
 Replacement always requires confirmation. Existing destinations are skipped.
 The application saves preferences, not the song queue, in your user profile.
+Recordings of hours convert in bounded memory (one GAC holds at most 18.2
+hours at 32768 Hz, 13.5 hours at 44151 Hz); Cancel now stops the current song
+without changing any file.
 Advanced includes FFmpeg override and channel choices. The bundled FFmpeg is
 used automatically unless you explicitly choose an override.
 

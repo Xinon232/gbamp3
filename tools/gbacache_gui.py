@@ -20,6 +20,7 @@ class ConverterGUI:
         self._folders = set()
         self.events = queue.Queue()
         self.stop_requested = threading.Event()
+        self.cancel_requested = threading.Event()
         self._poll_id = self._save_id = None
         self._closed = False
         self.last_result = None
@@ -127,9 +128,12 @@ class ConverterGUI:
         run = ttk.Frame(panel)
         run.grid(row=9, column=0, sticky='ew', pady=10)
         self.convert_button = ttk.Button(run, text='Convert', command=self.start_conversion)
-        self.convert_button.pack(side='left')
+        self.convert_button.grid(row=0, column=0, sticky='w')
         self.stop_button = ttk.Button(run, text='Stop after current song', command=self.request_stop)
-        self.stop_button.pack(side='left', padx=8)
+        self.stop_button.grid(row=0, column=1, sticky='w', padx=8)
+        # Long songs take minutes: this one abandons the current song at once.
+        self.cancel_button = ttk.Button(run, text='Cancel now', command=self.request_cancel)
+        self.cancel_button.grid(row=1, column=1, sticky='w', padx=8, pady=(4, 0))
         self.song_label = ttk.Label(panel, textvariable=self.current_song, wraplength=650)
         self.song_label.grid(row=10, column=0, sticky='w')
         self.progress = ttk.Progressbar(panel, maximum=1)
@@ -211,6 +215,7 @@ class ConverterGUI:
             widget.state(['disabled'] if self.busy or self.ffmpeg_mode.get() != 'manual' else ['!disabled'])
         self.file_list.configure(state='disabled' if self.busy else 'normal')
         self.stop_button.state(['!disabled'] if self.busy and not self.stop_requested.is_set() else ['disabled'])
+        self.cancel_button.state(['!disabled'] if self.busy and not self.cancel_requested.is_set() else ['disabled'])
 
     def selected_rate(self):
         return self.rate.get()
@@ -321,6 +326,7 @@ class ConverterGUI:
         self.save_settings()
         self.busy = True
         self.stop_requested.clear()
+        self.cancel_requested.clear()
         self.update_output_state()
         self.current_song.set('')
         self.status.set('Scanning selected files and folders…')
@@ -364,13 +370,17 @@ class ConverterGUI:
             def progress(fraction, message):
                 self.events.put(('progress', (max(0., min(1., float(fraction))), str(message))))
             try:
-                common = dict(overwrite=False, replace=options['output_mode'] == 'replace', progress=progress)
+                common = dict(overwrite=False, replace=options['output_mode'] == 'replace', progress=progress,
+                              cancel=self.cancel_requested.is_set)
                 if options['direction'] == 'mp3_to_gac':
                     note = gbacache.convert(source, destination, ffmpeg, options['rate'],
                                             channels=options['channels'], **common)
                 else:
                     note = gbacache.reverse_convert(source, destination, ffmpeg,
                                                     quality=options['quality'], channels=None, **common)
+            except gbacache.Cancelled:
+                self.events.put(('log', f'Cancelled: {source.name}; no files changed.'))
+                break
             except gbacache.Skipped as error:
                 skipped += 1
                 self.events.put(('log', f'Skipped: {source.name}: {error}'))
@@ -443,10 +453,17 @@ class ConverterGUI:
         self.status.set('Stop requested; the current song will finish safely. No next song will start.')
         self.update_output_state()
 
+    def request_cancel(self):
+        """Stop now: the current song is abandoned (no files changed), no next song starts."""
+        self.stop_requested.set()
+        self.cancel_requested.set()
+        self.status.set('Cancelling the current song; no files will be changed.')
+        self.update_output_state()
+
     def request_close(self):
         if self.busy:
-            self.request_stop()
-            self.status.set('Stopping after the current song. Close again when the batch has finished.')
+            self.request_cancel()
+            self.status.set('Cancelling the current song (no files changed). Close again when it has stopped.')
             return
         if self._closed:
             return
@@ -465,4 +482,8 @@ def main():
 
 
 if __name__ == '__main__':
+    # The encoder's worker processes start this program again (spawn): a
+    # frozen build must hand them over before anything else runs.
+    import multiprocessing
+    multiprocessing.freeze_support()
     main()

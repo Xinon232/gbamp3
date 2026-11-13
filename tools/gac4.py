@@ -350,31 +350,69 @@ def _split_ms(pcm, channels):
     return mid, np.clip(np.round(filt[1:len(side):2]), -32768, 32767).astype(np.int64)
 
 
+class Cancelled(Exception):
+    """Raised by the encoder when its cancel callback returns True."""
+
+
+# Segments coded together in one group (wider groups vectorize better). A
+# group holds its own PCM, mid/side signals and coding state only (about 1.5 MB
+# per segment), so the memory a file needs does not grow with its length.
+# Segments are coded independently, so the result does not depend on the
+# group size (tests/test_converter_stream.py).
+GROUP_SEGMENTS = 64
+
+
+def _side_window(pcm, w0, total, k0, k1, piece=1 << 18):
+    """Side samples k0..k1-1 of the stereo layout (as _split_ms) from PCM
+    frames starting at frame w0 (pcm: (n, 2) frames w0.. as far as needed).
+    Each sample is the 31-tap lowpass at frame 2k+1. Every piece of the
+    window keeps 16 frames on each side (it starts at frame 0 at the start of
+    the file and ends with the 16 zero frames after its end, as _split_ms),
+    so every value is computed exactly as on the whole file."""
+    out = np.zeros(max(k1 - k0, 0), np.int32)
+    for a in range(k0, k1, piece):
+        b = min(a + piece, k1)
+        f0 = max(0, 2 * a + 1 - 31)
+        f1 = min(2 * b + 32, total + 16)
+        x = np.zeros(f1 - f0)
+        n = min(f1, total) - f0
+        p = pcm[f0 - w0:f0 - w0 + n]
+        x[:n] = (p[:, 0].astype(np.int32) - p[:, 1]) >> 1
+        filt = np.convolve(x, _LP, 'same')
+        out[a - k0:b - k0] = np.clip(np.round(filt[2 * a + 1 - f0:2 * b - f0:2]), -32768, 32767)
+    return out
+
+
 class _Stream:
-    """Per-stream coding state of every segment (mid, or half-rate side)."""
-    def __init__(self, signal, units, per_unit, S, diagnostics=True):
-        n = units * per_unit
-        self.x = np.concatenate([np.zeros(MAX_ORDER, np.int64), signal[:n], np.zeros(n - min(n, len(signal)), np.int64)])
+    """Coding state of the segments of one group for one stream (mid, or
+    half-rate side). x (int32) holds the padded signal (MAX_ORDER zeros, the signal,
+    zeros to the end of the last unit) from padded position base on: the
+    group's samples, MAX_ORDER before them and the look-ahead after them."""
+    def __init__(self, x, base, u0, units, per_unit, S, diagnostics=True):
+        self.x = x
+        self.base = base
+        self.u0 = u0
         self.per_unit = per_unit
         self.h = np.zeros((S, MAX_ORDER), np.int64)
         self.c = np.zeros((S, MAX_ORDER), np.int64)
         self.cur = np.zeros(S, np.int64)
         self.first = np.ones(S, bool)
         subs = per_unit // SUB
-        self.q = np.zeros((units, per_unit), np.int64)
+        self.q = np.zeros((units, per_unit), np.int16)      # |q| <= QMAX
         self.rec = np.zeros((units, per_unit), np.int64) if diagnostics else None
-        self.idx = np.zeros((units, subs), np.int64)
-        self.tab = np.zeros((units, subs), np.int64)
+        self.idx = np.zeros((units, subs), np.int8)
+        self.tab = np.zeros((units, subs), np.int8)
 
     def at(self, u, j=0):
         """(targets, source history) of subblock j of units u."""
-        p = u * self.per_unit + j * SUB + MAX_ORDER
+        p = u * self.per_unit + j * SUB + MAX_ORDER - self.base
         t = self.x[p[:, None] + np.arange(SUB)[None, :]]
         src = self.x[p[:, None] - 1 - np.arange(MAX_ORDER)[None, :]]
         return t, src
 
     def setup(self, s, a, frames_ahead):
         """LPC and history for a block of segment s starting at sample a."""
+        a -= self.base
         hist = self.x[a + MAX_ORDER - 1 - np.arange(MAX_ORDER)]
         order, refl, coef = _choose(self.x[a + MAX_ORDER:a + MAX_ORDER + frames_ahead], hist)
         self.h[s] = hist
@@ -384,35 +422,12 @@ class _Stream:
         return {'order': order, 'refl': refl, 'hist': hist[:order].tolist()}
 
 
-def encode(pcm, channels, params=None, *, diagnostics=True, native=True, progress=None):
-    """pcm: (n, 2) int16 stereo. channels: 2 = mid + half-rate side, 1 = mid only.
-    Returns (blocks, first frame of each block, total frames, info); info
-    'output' holds the decoder's (L, R) values (before the 8-bit output stage).
-
-    The file is cut into segments of params.segment units that are coded in
-    parallel. Within a segment, units go into the current block until the
-    next one does not fit; that unit then starts the next block. A block's
-    LPC comes from a fixed look-ahead window, so it never depends on where
-    the block ends."""
-    if channels not in (1, 2):
-        raise ValueError('channels must be 1 or 2')
-    if params is None:
-        params = Params if channels == 2 else MonoParams
-    pcm = np.asarray(pcm, np.int64)
-    if pcm.ndim != 2 or pcm.shape[1] != 2:
-        raise ValueError('PCM must have shape (frames, 2)')
-    total = len(pcm)
-    if not total:
-        raise ValueError('no audio')
-    mid, side = _split_ms(pcm, channels)
-    stereo = side is not None
-    nunits = (total + UNIT - 1) // UNIT
-    seg = max(1, min(params.segment, nunits))
-    seg_start = np.arange(0, nunits, seg)
-    seg_end = np.minimum(seg_start + seg, nunits)
+def _code_group(M, Sd, seg_start, seg_end, params, native, report, cancel):
+    """Code the segments seg_start..seg_end (unit ranges) of one group; every
+    segment is coded on its own (rows of the arrays below), in parallel.
+    Returns the blocks (dicts) in no particular order."""
+    stereo = Sd is not None
     S = len(seg_start)
-    M = _Stream(mid, nunits, UNIT, S, diagnostics)
-    Sd = _Stream(side, nunits, UNIT // 2, S, diagnostics) if stereo else None
     u = seg_start.copy()
     used = np.zeros(S, np.int64)
     count = np.zeros(S, np.int64)
@@ -430,12 +445,11 @@ def encode(pcm, channels, params=None, *, diagnostics=True, native=True, progres
         count[s] = 0
         used[s] = 0
 
-    last_percent = -1
     while True:
-        percent = int(90 * int((u - seg_start).sum()) / nunits)
-        if progress is not None and percent != last_percent:
-            progress(percent / 100, 'Encoding GAC')
-            last_percent = percent
+        if cancel is not None and cancel():
+            raise Cancelled('cancelled')
+        if report is not None:
+            report(int((u - seg_start).sum()))
         act = np.nonzero(u < seg_end)[0]
         if not len(act):
             break
@@ -471,7 +485,7 @@ def encode(pcm, channels, params=None, *, diagnostics=True, native=True, progres
         fits = (count[act] == 0) | (used[act] + bits <= cap[act])
         assert np.all(bits[count[act] == 0] <= cap[act][count[act] == 0]), 'one unit cannot overflow a block'
         ok = act[fits]
-        uo = u[ok]
+        uo = u[ok] - M.u0
         f = fits
         for st, parts in ((M, (m0, m1)), (Sd, (s0,)) if stereo else (None, ())):
             if st is None:
@@ -481,7 +495,7 @@ def encode(pcm, channels, params=None, *, diagnostics=True, native=True, progres
                 st.idx[uo, j] = idx
                 st.tab[uo, j] = tab
                 st.q[uo, j * SUB:(j + 1) * SUB] = q
-                if diagnostics:
+                if st.rec is not None:
                     st.rec[uo, j * SUB:(j + 1) * SUB] = x
                 if j == 0:
                     for s_, i_ in zip(ok[st.first[ok]], init[st.first[ok]]):
@@ -502,37 +516,295 @@ def encode(pcm, channels, params=None, *, diagnostics=True, native=True, progres
             if count[s] == MAX_FRAMES // UNIT or u[s] == seg_end[s]:
                 finish(s)
     blocks.sort(key=lambda b: b['start'])
-    out, firsts, mids, sides = [], [], [], []
-    fill = 0
-    for bi, b in enumerate(blocks):
-        percent = 90 + int(10 * bi / len(blocks))
-        if progress is not None and percent != last_percent:
-            progress(percent / 100, 'Packing GAC')
-            last_percent = percent
+    return blocks
+
+
+def _encode_group(window, w0, total, u0, u1, nunits, seg, channels, params, native=True,
+                  diagnostics=False, report=None, cancel=None):
+    """Encode units u0..u1 (whole segments of seg units; u1 = nunits for the
+    last group) of a file of `total` frames. window: (n, 2) PCM frames from
+    frame w0 on, covering frames u0 * UNIT - 64 (or 0) up to
+    u1 * UNIT + params.lookahead + 64 (or the end of the file).
+    Returns [(first frame, block bytes)] and, with diagnostics, the
+    reconstruction per block (as encode())."""
+    la = params.lookahead
+    stereo = channels == 2
+    units = u1 - u0
+    # Mid: padded positions u0*UNIT .. (padded position i holds sample i - MAX_ORDER).
+    mlo, mhi = u0 * UNIT, min(u1 * UNIT + MAX_ORDER + la, MAX_ORDER + nunits * UNIT)
+    xm = np.zeros(mhi - mlo, np.int32)
+    s0, s1 = max(mlo - MAX_ORDER, 0), min(mhi - MAX_ORDER, total)
+    for a in range(s0, s1, 1 << 18):
+        p = window[a - w0:min(a + (1 << 18), s1) - w0]
+        xm[a - (mlo - MAX_ORDER):a - (mlo - MAX_ORDER) + len(p)] = (p[:, 0].astype(np.int32) + p[:, 1]) >> 1
+    S = (units + seg - 1) // seg
+    M = _Stream(xm, mlo, u0, units, UNIT, S, diagnostics)
+    Sd = None
+    if stereo:
+        half = UNIT // 2
+        slo, shi = u0 * half, min(u1 * half + MAX_ORDER + la // 2, MAX_ORDER + nunits * half)
+        xs = np.zeros(shi - slo, np.int32)
+        k0, k1 = max(slo - MAX_ORDER, 0), min(shi - MAX_ORDER, total // 2)
+        xs[k0 - (slo - MAX_ORDER):k1 - (slo - MAX_ORDER)] = _side_window(window, w0, total, k0, k1)
+        Sd = _Stream(xs, slo, u0, units, half, S, diagnostics)
+    seg_start = np.arange(u0, u1, seg)
+    seg_end = np.minimum(seg_start + seg, u1)
+    blocks = _code_group(M, Sd, seg_start, seg_end, params, native, report, cancel)
+    out, diag = [], []
+    for b in blocks:
         a, n = b['start'], b['units']
         frames = min(n * UNIT, total - a * UNIT)
-        silent = stereo and not Sd.idx[a:a + n].any() and np.abs(Sd.x[MAX_ORDER + a * UNIT // 2:MAX_ORDER + (a + n) * UNIT // 2]).max() < 64
+        la_ = a - u0
+        silent = stereo and not Sd.idx[la_:la_ + n].any() and np.abs(Sd.x[MAX_ORDER + la_ * UNIT // 2:MAX_ORDER + (la_ + n) * UNIT // 2].astype(np.int64)).max() < 64
         data = _block_bytes(b, M, Sd if stereo and not silent else None, silent, frames)
         assert len(data) <= BLOCK
-        fill += len(data)
-        out.append(data.ljust(BLOCK, b'\0'))
-        firsts.append(a * UNIT)
+        out.append((a * UNIT, data))
         if not diagnostics:
             continue
-        mids.append(M.rec[a:a + n].reshape(-1)[:frames])
+        mid = M.rec[la_:la_ + n].reshape(-1)[:frames]
+        side = None
         if stereo:
             if silent:
-                sides.append((0, np.zeros((frames + 1) // 2, np.int64)))
+                side = (0, np.zeros((frames + 1) // 2, np.int64))
             else:
-                sides.append((int(b['side']['hist'][0]), Sd.rec[a:a + n].reshape(-1)[:(frames + 1) // 2]))
-    if progress is not None:
-        progress(1.0, 'GAC encoded')
+                side = (int(b['side']['hist'][0]), Sd.rec[la_:la_ + n].reshape(-1)[:(frames + 1) // 2])
+        diag.append((mid, side))
+    return out, diag
+
+
+def _group_job(args):
+    """One group in a worker process (StreamEncoder with workers > 1)."""
+    return _encode_group(*args)[0]
+
+
+class StreamEncoder:
+    """GAC v4 encoder fed with PCM in pieces of any size (bounded memory:
+    it keeps the frames of the groups being coded and the look-ahead after
+    them). push() and finish() return the finished blocks in file order as
+    (first frame, block bytes without the zero padding to BLOCK); the result
+    equals encode() on the whole PCM.
+
+    expected_frames (optional, an estimate) is used for progress only.
+    cancel: callable; when it returns True the encoder raises Cancelled.
+    workers > 1 codes groups in that many worker processes (spawned; the
+    same function, so the same bytes); if they cannot run, the groups are
+    coded in this process. Call close() (or use `with`) to stop them."""
+    def __init__(self, channels, params=None, *, native=True, diagnostics=False, progress=None,
+                 cancel=None, group=GROUP_SEGMENTS, expected_frames=None, workers=1):
+        if channels not in (1, 2):
+            raise ValueError('channels must be 1 or 2')
+        self.channels = channels
+        self.params = params if params is not None else Params if channels == 2 else MonoParams
+        self.native, self.diagnostics = native, diagnostics
+        self.progress, self.cancel = progress, cancel
+        self.group = max(1, int(group))
+        self.expected = expected_frames
+        self.workers = 1 if diagnostics else max(1, int(workers))
+        self.frames = 0                  # frames received
+        self._parts = []                 # PCM not yet coded: frames self._start..self.frames
+        self._start = 0
+        self._u0 = 0                     # first unit of the next group
+        self.diag = []
+        self._last = -1
+        self.done_units = 0
+        self._pool = None
+        self._pending = []               # [(future or None, job args, units)] in file order
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def close(self):
+        """Stop the worker processes (at once; unfinished work is dropped)."""
+        pool, self._pool = self._pool, None
+        self._pending = []
+        if pool is None:
+            return
+        terminate = getattr(pool, 'terminate_workers', None)
+        if terminate is not None:
+            try:
+                terminate()
+            except Exception:
+                pass
+        else:
+            for proc in list((getattr(pool, '_processes', None) or {}).values()):
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    def _need(self):
+        """Frames after which the next (not last) group can be coded."""
+        return (self._u0 + self.group * self.params.segment) * UNIT + self.params.lookahead + 64
+
+    def _report(self, units, phase='Encoding GAC'):
+        if self.progress is None:
+            return
+        total = max(self.expected or 0, self.frames, 1)
+        percent = min(99, int(100 * units * UNIT / total))
+        if percent != self._last:
+            self._last = percent
+            self.progress(percent / 100, phase)
+
+    def _check(self):
+        if self.cancel is not None and self.cancel():
+            raise Cancelled('cancelled')
+
+    def push(self, pcm):
+        self._check()
+        pcm = np.asarray(pcm)
+        if pcm.ndim != 2 or pcm.shape[1] != 2:
+            raise ValueError('PCM must have shape (frames, 2)')
+        if len(pcm):
+            self._parts.append(pcm)
+            self.frames += len(pcm)
+        out = []
+        while self.frames >= self._need():
+            out += self._code(last=False)
+        return out
+
+    def finish(self):
+        """Code the rest; returns its blocks. Raises ValueError without audio."""
+        if not self.frames:
+            raise ValueError('no audio')
+        out = self._code(last=True)
+        while self._pending:
+            out += self._collect()
+        self.close()
+        if self.progress is not None:
+            self.progress(1.0, 'GAC encoded')
+        return out
+
+    def _start_pool(self):
+        if self._pool is None and self.workers > 1:
+            try:
+                import multiprocessing
+                from concurrent.futures import ProcessPoolExecutor
+                self._pool = ProcessPoolExecutor(self.workers, mp_context=multiprocessing.get_context('spawn'))
+            except Exception:
+                self.workers = 1
+        return self._pool
+
+    def _inline(self, args, units):
+        base = self.done_units
+        report = None if self.progress is None else (lambda n: self._report(base + n))
+        blocks, diag = _encode_group(*args, report=report, cancel=self.cancel)
+        self.diag += diag
+        self.done_units += units
+        self._report(self.done_units)
+        return blocks
+
+    def _collect(self):
+        """Blocks of the oldest pending group (waits for it)."""
+        future, args, units = self._pending.pop(0)
+        if future is not None:
+            from concurrent.futures import wait
+            while True:
+                self._check()
+                if wait([future], timeout=0.1)[0]:
+                    break
+            try:
+                blocks = future.result()
+            except Exception as error:
+                from concurrent.futures.process import BrokenProcessPool
+                if not isinstance(error, (BrokenProcessPool, OSError, RuntimeError)):
+                    raise
+                # Workers cannot run here: code the rest in this process.
+                pending, self._pending = self._pending, []
+                self.close()
+                self.workers = 1
+                self._pending = [(None, a, n) for _, a, n in [(future, args, units)] + pending]
+                return self._collect()
+            self.done_units += units
+            self._report(self.done_units)
+            return blocks
+        return self._inline(args, units)
+
+    def _code(self, last):
+        p = self.params
+        if last:
+            nunits = (self.frames + UNIT - 1) // UNIT
+            seg = max(1, min(p.segment, nunits))
+            u1 = nunits
+        else:
+            # A group before the last sees the file as the frames received so
+            # far: they reach past its look-ahead (_need), so nothing is cut.
+            nunits = (self.frames + UNIT - 1) // UNIT
+            seg = p.segment
+            u1 = self._u0 + self.group * seg
+        window = self._parts[0] if len(self._parts) == 1 else np.concatenate(self._parts)
+        self._parts = [window]
+        u0 = self._u0
+        pool = self._pool if last else self._start_pool()
+        if pool is not None:
+            lo = max(0, u0 * UNIT - 64)
+            hi = self.frames if last else min(self.frames, u1 * UNIT + p.lookahead + 64)
+            job = (np.ascontiguousarray(window[lo - self._start:hi - self._start]), lo, self.frames,
+                   u0, u1, nunits, seg, self.channels, p, self.native, False)
+        else:
+            job = (window, self._start, self.frames, u0, u1, nunits, seg, self.channels, p,
+                   self.native, self.diagnostics)
+        out = []
+        if pool is not None:
+            try:
+                self._pending.append((pool.submit(_group_job, job), job, u1 - u0))
+            except Exception:
+                self.close()
+                self.workers = 1
+                self._pending.append((None, job, u1 - u0))
+            while len(self._pending) > self.workers:
+                out += self._collect()
+        else:
+            while self._pending:
+                out += self._collect()
+            out += self._inline(job, u1 - u0)
+        self._u0 = u1
+        keep = u1 * UNIT - 128
+        if not last and keep > self._start:
+            self._parts = [window[keep - self._start:]]
+            self._start = keep
+        if last:
+            self._parts = []
+        return out
+
+
+def encode(pcm, channels, params=None, *, diagnostics=True, native=True, progress=None, group=GROUP_SEGMENTS,
+           workers=1):
+    """pcm: (n, 2) int16 stereo. channels: 2 = mid + half-rate side, 1 = mid only.
+    Returns (blocks, first frame of each block, total frames, info); info
+    'output' holds the decoder's (L, R) values (before the 8-bit output stage).
+
+    The file is cut into segments of params.segment units that are coded in
+    parallel. Within a segment, units go into the current block until the
+    next one does not fit; that unit then starts the next block. A block's
+    LPC comes from a fixed look-ahead window, so it never depends on where
+    the block ends. StreamEncoder does the same in bounded memory."""
+    if channels not in (1, 2):
+        raise ValueError('channels must be 1 or 2')
+    pcm = np.asarray(pcm)
+    if pcm.ndim != 2 or pcm.shape[1] != 2:
+        raise ValueError('PCM must have shape (frames, 2)')
+    if not len(pcm):
+        raise ValueError('no audio')
+    if pcm.dtype != np.int16:
+        pcm = np.asarray(pcm, np.int64)
+    with StreamEncoder(channels, params, native=native, diagnostics=diagnostics, progress=progress,
+                       group=group, expected_frames=len(pcm), workers=workers) as enc:
+        pieces = enc.push(pcm) + enc.finish()
+    total = enc.frames
+    out = [data.ljust(BLOCK, b'\0') for _, data in pieces]
+    firsts = [a for a, _ in pieces]
+    fill = sum(len(data) for _, data in pieces)
     if not diagnostics:
         return out, firsts, total, {'fill': fill / (len(out) * BLOCK)}
-    m = np.concatenate(mids)
+    stereo = channels == 2
+    m = np.concatenate([d[0] for d in enc.diag])
     if stereo:
         parts = []
-        for (prev, s), a, z in zip(sides, firsts, firsts[1:] + [total]):
+        for (_, (prev, s)), a, z in zip(enc.diag, firsts, firsts[1:] + [total]):
             full = np.empty(2 * len(s), np.int64)
             full[1::2] = s
             full[0::2] = (np.concatenate([[prev], s[:-1]]) + s) >> 1
@@ -558,29 +830,45 @@ def _pack_bits(values, lengths):
                        bitorder='little').tobytes()
 
 
+# Code tables padded to one width, indexed [table, symbol].
+_NSYM = max(len(t) for t in _LEN)
+_LEN2 = np.array([np.pad(t, (0, _NSYM - len(t))) for t in _LEN], np.int64)
+_CODE2 = np.array([np.pad(t, (0, _NSYM - len(t))) for t in _CODE], np.int64)
+_SLOTS = 2 + 3 * SUB             # header code, step index escape, then (code, raw, raw) per residual code
+
+
 def _stream_codes(st, a, n, init):
-    """(values, lengths) per subblock of units a..a+n of stream st."""
-    out = []
-    cur = init
+    """(values, lengths) of units a..a+n (indices into st's arrays) of stream st,
+    as (n, subblocks, _SLOTS) arrays in bitstream order; unused slots have length 0."""
     subs = st.per_unit // SUB
-    for u in range(a, a + n):
-        part = []
-        for j in range(subs):
-            idx, tb = int(st.idx[u, j]), int(st.tab[u, j])
-            sym = int(_header_symbol(np.array(idx), np.array(cur), np.array(tb)))
-            vals = [int(_HCODE[sym])]
-            lens = [int(_HLEN[sym])]
-            if sym >= ESC_SYMBOL:
-                vals.append(idx)
-                lens.append(IDX_BITS)
-            if idx:
-                cur = idx
-                sym, raw, rawn = _residual_codes(st.q[u, j * SUB:(j + 1) * SUB], tb)
-                vals += np.concatenate([_CODE[tb][sym][:, None], raw], 1).reshape(-1).tolist()
-                lens += np.concatenate([_LEN[tb][sym][:, None], rawn], 1).reshape(-1).tolist()
-            part.append((vals, lens))
-        out.append(part)
-    return out
+    idx = st.idx[a:a + n].reshape(-1).astype(np.int64)
+    tab = st.tab[a:a + n].reshape(-1).astype(np.int64)
+    q = st.q[a:a + n].reshape(-1, SUB).astype(np.int64)
+    m = len(idx)
+    live = idx != 0
+    # Step index before each subblock: the last nonzero one before it, else init.
+    pos = np.maximum.accumulate(np.where(live, np.arange(m), -1))
+    prev = np.concatenate([[-1], pos[:-1]])
+    cur = np.where(prev >= 0, idx[np.maximum(prev, 0)], init)
+    sym = _header_symbol(idx, cur, tab)
+    vals = np.zeros((m, _SLOTS), np.int64)
+    lens = np.zeros((m, _SLOTS), np.int64)
+    vals[:, 0] = _HCODE[sym]
+    lens[:, 0] = _HLEN[sym]
+    vals[:, 1] = idx
+    lens[:, 1] = np.where(sym >= ESC_SYMBOL, IDX_BITS, 0)
+    for single in (False, True):
+        rows = live & ((tab >= PAIR_TABLES) if single else (tab < PAIR_TABLES))
+        if not rows.any():
+            continue
+        t = tab[rows]
+        rs, raw, rawn = _residual_codes(q[rows], PAIR_TABLES if single else 0)
+        k = rs.shape[1]
+        v = np.concatenate([_CODE2[t[:, None], rs][..., None], raw], 2).reshape(len(t), 3 * k)
+        l = np.concatenate([_LEN2[t[:, None], rs][..., None], rawn], 2).reshape(len(t), 3 * k)
+        vals[rows, 2:2 + 3 * k] = v
+        lens[rows, 2:2 + 3 * k] = l
+    return vals.reshape(n, subs, _SLOTS), lens.reshape(n, subs, _SLOTS)
 
 
 def _block_bytes(b, M, Sd, silent, frames):
@@ -599,14 +887,11 @@ def _block_bytes(b, M, Sd, silent, frames):
         head.append(0)
     for k, _ in streams:
         head += np.asarray(b[k]['hist'], '<i2').tobytes()
-    codes = [_stream_codes(st, a, n, b[k]['init']) for k, st in streams]
-    vals, lens = [], []
-    for i in range(n):
-        for c in codes:
-            for v, l in c[i]:
-                vals += v
-                lens += l
-    return bytes(head) + _pack_bits(vals, lens)
+    codes = [_stream_codes(st, a - st.u0, n, b[k]['init']) for k, st in streams]
+    # Per unit: the mid subblocks, then the side subblock.
+    vals = np.concatenate([c[0] for c in codes], 1)
+    lens = np.concatenate([c[1] for c in codes], 1)
+    return bytes(head) + _pack_bits(vals.reshape(-1), lens.reshape(-1))
 
 
 # ------------------------------------------------- reference decoder --------

@@ -94,6 +94,8 @@ The generated tables are committed; their generators are in `tools/`:
 
 `tools/gbacache_gui.py` (window) and `tools/gbacache.py` (command line)
 convert MP3 files to GAC caches; the window also converts GAC back to MP3.
+Converter 3.2 handles recordings of any length in bounded memory (one GAC
+holds at most 18.2 hours at 32768 Hz, 13.5 hours at 44151 Hz).
 They need Python 3.11+, numpy, FFmpeg and, for the window, Tkinter:
 
 ```sh

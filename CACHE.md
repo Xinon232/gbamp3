@@ -31,6 +31,8 @@ Leave the rate checkbox unchecked for **32768 samples/second/channel**, the norm
 
 In the converter, add MP3 files or a whole folder (**Add folder...**; subfolders are included unless you untick it). Each `.gac` is saved **next to its MP3** by default, or into an output folder that keeps the subfolder structure. Output filenames retain each source stem and use `.gac`. Existing `.gac` files are skipped unless **Overwrite** is ticked. **Replace** deletes each MP3 after its `.gac` has been saved and checked (the converter asks first; a song that fails keeps its MP3), so a card can hold only `.gac` files. Without Replace, originals remain unchanged. Output can go straight to an SD card (FAT32/exFAT): files appear as `name.gac.part` while being written. For a rate or layout comparison, use separate output folders: the conversions otherwise have the same filename. Long file names (UTF-8) are fine on the card.
 
+Long recordings (hours) convert with the same, small amount of memory (converter 3.2). One GAC holds at most 2^31 - 1 frames, 18.2 hours at 32768 Hz or 13.5 hours at 44151 Hz, and about 1 GiB of audio (reached first only by dense, noise-like stereo); a longer recording stops with "too long for gbamp3: about N hours max at this rate": split it into shorter MP3s. **Cancel now** stops the song being converted without changing any file.
+
 ## Command line
 
 ```sh

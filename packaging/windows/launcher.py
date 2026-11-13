@@ -86,4 +86,8 @@ def main():
 
 
 if __name__ == '__main__':
+    # The encoder's worker processes start this program again (spawn): a
+    # frozen build must hand them over before anything else runs.
+    import multiprocessing
+    multiprocessing.freeze_support()
     main()

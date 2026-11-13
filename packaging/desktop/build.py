@@ -113,7 +113,7 @@ def build(output: Path, source: Path = ROOT, backend_dir: Path | None = None) ->
     packaging_inputs = {p.name: sha256(p) for p in sorted(HERE.iterdir()) if p.is_file()}
     dirty = subprocess.check_output(['git', 'status', '--porcelain', '--', 'tools'],
                                     cwd=source, text=True).strip()
-    info = {'release_title': 'gbamp3 converter 3.1', 'target': target,
+    info = {'release_title': 'gbamp3 converter 3.2', 'target': target,
             'source_commit': commit, 'source_tools_dirty': bool(dirty),
             'source_file_sha256': inputs, 'packaging_file_sha256': packaging_inputs,
             'host': platform.platform(), 'runtime': versions,
