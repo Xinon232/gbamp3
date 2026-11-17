@@ -67,6 +67,10 @@ unsigned player_div64(uint64_t,unsigned);
 void *helix_malloc(int n){unsigned k=((unsigned)n+7)&~7u;if(n<=0||k>sizeof(arena)-arena_used)return 0;void*p=arena+arena_used;arena_used+=k;if(arena_used>stats.arena_peak)stats.arena_peak=arena_used;return p;}
 void helix_free(void*p){(void)p;}
 static FAST unsigned ticks(void){unsigned h,l,h2;do{h=R16(0x400010c);l=R16(0x4000108);h2=R16(0x400010c);}while(h!=h2);return(h<<16)|l;}
+/* 13.0: Update Library's time, added up here (the 32-bit tick count wraps
+ * after 256 s; the library calls this many times a second). */
+static unsigned upd_on,upd_last;static uint64_t upd_sum;
+static void upd_tick(void){unsigned t=ticks();upd_sum+=t-upd_last;upd_last=t;}
 static FAST unsigned period(void){return stats.clock_base;}
 static FAST __attribute__((optimize("O2"))) void feed16(void){
  unsigned count=wr-rd;if(count<stats.min_queue)stats.min_queue=count;
@@ -719,12 +723,13 @@ static void lib_hash_build(void){
 }
 int player_update_library(LibraryProgress cb){
  audio_stop();
- unsigned t=ticks();
+ unsigned t=ticks();upd_last=t;upd_sum=0;upd_on=1;
  library_long_scan=player_cover_scan();library_cover_rebuild=library_long_scan!=((app.new_playlist_top>>4)&1u);
  int e=library_update(cb);
  if(!e&&library_cover_rebuild){app.new_playlist_top^=16u;state_dirty=1;}   /* 12.0: built as set */
  /* v0.9.8 telemetry: update time (covers included), pictures decoded. */
  stats.update_cycles=ticks()-t;stats.cover_decodes=library_cover_decodes;stats.library_songs=library_count();
+ upd_tick();upd_on=0;stats.update_ms=(uint32_t)(upd_sum*1000u/16777216u);
  /* The cover decoder used the decoder overlay: bring the song's decoder back.
   * MP3 state lives in EWRAM (re-copying the code is enough); GAC state was
   * in the overlay's scratch, so a GAC restarts at its paused frame. */
@@ -793,7 +798,7 @@ static void service(unsigned low){
  input_poll((uint16_t)(~R16(0x4000130)&0x3ff));
  for(unsigned k=0;k<2&&!stats.paused&&!stats.fatal&&!transition_end&&wr-rd<low;k++)pump();
 }
-void player_service(void){service(stats.cache_audio?FILL:8192u);}   /* MP3: 0.25 s at 32768 Hz (v1.1) */
+void player_service(void){if(upd_on)upd_tick();service(stats.cache_audio?FILL:8192u);}   /* MP3: 0.25 s at 32768 Hz (v1.1) */
 /* v1.8: only below the list floor (1/8 s): drawing a screen behind the blank
  * of a mode change first, the rest of the buffer refilled afterwards. */
 void player_service_floor(void){service(SCROLL_MIN_BUFFER);}

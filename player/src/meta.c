@@ -122,7 +122,7 @@ static __attribute__((noinline)) int id3v2(FIL *f,struct SongMeta *m,unsigned *a
     if(off<n&&!rd(f,pos+hs+off,pb,k,&got)&&got==k){
      uint32_t po,pl;int type=meta_id3_picture(pb,k,n-off,ver==2,pos+hs+off,&po,&pl);
      /* The front cover (type 3) wins; otherwise the first JPEG. */
-     if(type>=0&&(!m->pic_len||(type==3&&!front))){m->pic_off=po;m->pic_len=pl;front=type==3;}
+     if(type>=0&&(!m->pic_len||(type==3&&!front))){m->pic_off=po;m->pic_len=pl;front=type==3;m->pic_front=(uint8_t)front;}
     }
    }
   }

@@ -11,7 +11,10 @@
 #include <stdint.h>
 #define JPEG_MAX_BYTES (256u*1024u)   /* larger picture frames are skipped */
 #define JPEG_MAX_SIDE 1600u           /* wider or taller pictures are skipped */
-#define JPEG_MAX_SECONDS 5u           /* per picture during Update Library */
+#define JPEG_MAX_SECONDS 5u           /* per picture during Update Library, plus 1 s per 32 KB (13.0) */
+#define JPEG_MAX_SECONDS_CAP 13u      /* 13.0: at most (256 KB) */
+#define JPEG_FRONT_ASPECT 512u        /* 13.0: a front cover at most 2:1 wide or tall (Q8) */
+#define JPEG_OTHER_ASPECT 342u        /* 13.0: another picture type at most 4:3 */
 #define JPEG_SIDE 64u                 /* v1.8: covers are 64x64 */
 #define JPEG_WORK_BYTES 49152u        /* caller's work area (static, not stack): the 64x64 sums */
 /* Reads up to cap bytes of the picture from offset `at`; returns the count
@@ -19,7 +22,10 @@
 typedef int (*JpegRead)(void *ctx,uint32_t at,uint8_t *buf,unsigned cap);
 /* Nonzero: stop (time limit). Called once per MCU row. May be 0. */
 typedef int (*JpegStop)(void *ctx);
-enum {JPEG_OK=0,JPEG_ERR_IO=-1,JPEG_ERR_FORMAT=-2,JPEG_ERR_UNSUPPORTED=-3,JPEG_ERR_SIZE=-4,JPEG_ERR_TIME=-5,JPEG_ERR_DATA=-6};
+enum {JPEG_OK=0,JPEG_ERR_IO=-1,JPEG_ERR_FORMAT=-2,JPEG_ERR_UNSUPPORTED=-3,JPEG_ERR_SIZE=-4,JPEG_ERR_TIME=-5,JPEG_ERR_DATA=-6,JPEG_ERR_SHAPE=-7};
+/* 13.0: when nonzero, pictures wider or taller than jpeg_dc_aspect_q8 / 256
+ * : 1 are refused (JPEG_ERR_SHAPE) as soon as the frame header is read. */
+extern unsigned jpeg_dc_aspect_q8;
 /* Decodes `bytes` bytes of JPEG into out[64*64] (little-endian RGB555
  * values, row-major). Never reads outside [0, bytes) nor writes outside
  * work/out. */

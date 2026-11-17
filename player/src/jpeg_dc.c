@@ -45,6 +45,7 @@ _Static_assert(JPEG_SIDE*JPEG_SIDE*3*4<=JPEG_WORK_BYTES,"JPEG work area");
 /* Decoder state and tables: IWRAM scratch of the cover overlay on the GBA. */
 /* v2.1: after a decode the same IWRAM holds the cover reduction's pixels. */
 static union {struct {struct State st;struct Huff huff[8];} d;uint32_t px[COVER_PIXELS];} jpeg_mem JPEG_SCRATCH;
+unsigned jpeg_dc_aspect_q8;   /* 13.0: 0 no shape limit (jpeg_dc.h) */
 #define jpeg_state jpeg_mem.d.st
 #define jpeg_huff jpeg_mem.d.huff
 
@@ -284,6 +285,8 @@ static int segment(struct State *s,int m,unsigned len){
   if(p<0||hh<0||ww<0||n<0)return JPEG_ERR_FORMAT;
   if(p!=8||!hh||!ww)return JPEG_ERR_UNSUPPORTED;
   if((unsigned)ww>JPEG_MAX_SIDE||(unsigned)hh>JPEG_MAX_SIDE)return JPEG_ERR_SIZE;
+  {unsigned a=(unsigned)(ww>hh?ww:hh),b=(unsigned)(ww>hh?hh:ww);
+   if(jpeg_dc_aspect_q8&&a*256u>b*jpeg_dc_aspect_q8)return JPEG_ERR_SHAPE;}
   if(n!=1&&n!=3)return JPEG_ERR_UNSUPPORTED;
   if(len!=6+3u*(unsigned)n)return JPEG_ERR_FORMAT;
   s->w=(unsigned)ww;s->hgt=(unsigned)hh;s->nc=(unsigned)n;s->hmax=s->vmax=1;

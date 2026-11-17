@@ -13,7 +13,7 @@ struct SongMeta {
  uint32_t rate;          /* source samples per second */
  uint8_t format,channels,has_art,title_from_name;
  uint16_t bitrate;       /* MP3 kbps when constant (0: unknown) */
- uint8_t vbr,pad;        /* MP3: variable bitrate (Xing/VBRI header) */
+ uint8_t vbr,pic_front;  /* MP3: variable bitrate (Xing/VBRI header); 13.0: pic_off/pic_len is a front cover (ID3 type 3) */
  uint32_t pic_off,pic_len;   /* MP3: embedded JPEG front cover in the file (0: none) */
 };
 /* Fill from an open file. Missing title falls back to the filename without

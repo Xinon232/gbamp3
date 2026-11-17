@@ -47,7 +47,7 @@ Official references:
 - https://ffmpeg.org/download.html
 - https://ffmpeg.org/releases/
 - https://ffmpeg.org/platform.html
-- https://zlib.net/
+- https://zlib.net/ (archive from github.com/madler/zlib releases, fallback zlib.net/fossils)
 - https://www.msys2.org/docs/environments/
 - https://docs.github.com/actions/reference/runners/github-hosted-runners
 

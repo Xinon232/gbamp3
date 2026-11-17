@@ -41,6 +41,13 @@ extern void disk_index_writes(unsigned);
 #define GROUP_BYTES 20
 #define REC_HEAD 40
 #define COVER_BYTES COVER_REC          /* v7: reduced 64x64 */
+/* Record flags (byte 24): 1 GAC cover, 2 title from the file name, 4 VBR;
+ * 13.0: 8 the picture is a front cover, 16 the flags 8 and 32 are known (a
+ * 12.0 record lacks them and is read again), 32 the picture is not usable
+ * (set by the cover pass; kept while the file is unchanged). */
+#define REC_PIC_FRONT 8u
+#define REC_PIC_INFO 16u
+#define REC_PIC_BAD 32u
 #define NO_COVER 0xffffffffu
 #define WORD_KEY 122     /* v1.2 word entries: folded title from the word on */
 #define WORD_MAX 32      /* word starts indexed per title */
@@ -152,6 +159,7 @@ static int decode(const uint8_t *r,unsigned len,struct LibSong *s){
  if(h!=want)return -1;
  s->format=r[2];s->channels=r[3];s->size=le32(r+4);s->date=le32(r+8);s->duration_ms=le32(r+12);s->rate=le32(r+16);
  s->track=(uint16_t)(r[20]|r[21]<<8);s->disc=(uint16_t)(r[22]|r[23]<<8);s->has_art=r[24]&1;s->title_from_name=(r[24]>>1)&1;
+ s->pic_front=(r[24]&REC_PIC_FRONT)!=0;s->pic_info=(r[24]&REC_PIC_INFO)!=0;s->pic_bad=(r[24]&REC_PIC_BAD)!=0;
  s->vbr=(r[24]>>2)&1;s->bitrate=(uint16_t)(r[26]|r[27]<<8);s->pic_off=le32(r+32);s->pic_len=le32(r+36);
  char *dst[6]={s->path+10,s->title,s->artist,s->album,s->album_artist,s->genre};
  unsigned cap[6]={STORAGE_PATH-10,META_TITLE,META_NAME,META_NAME,META_NAME,META_GENRE},at=REC_HEAD;
@@ -163,7 +171,7 @@ static unsigned encode(uint8_t *r,const char *rel,const struct SongMeta *m,uint3
  memset(r,0,REC_MAX);
  r[2]=m->format;r[3]=m->channels;put32(r+4,size);put32(r+8,date);put32(r+12,m->duration_ms);put32(r+16,m->rate);
  r[20]=(uint8_t)m->track;r[21]=(uint8_t)(m->track>>8);r[22]=(uint8_t)m->disc;r[23]=(uint8_t)(m->disc>>8);
- r[24]=(uint8_t)((m->has_art?1:0)|(m->title_from_name?2:0)|(m->vbr?4:0));r[26]=(uint8_t)m->bitrate;r[27]=(uint8_t)(m->bitrate>>8);
+ r[24]=(uint8_t)((m->has_art?1:0)|(m->title_from_name?2:0)|(m->vbr?4:0)|(m->pic_front?REC_PIC_FRONT:0)|REC_PIC_INFO);r[26]=(uint8_t)m->bitrate;r[27]=(uint8_t)(m->bitrate>>8);
  put32(r+32,m->pic_off);put32(r+36,m->pic_len);
  const char *src_s[6]={rel,m->title,m->artist,m->album,m->album_artist,m->genre};unsigned at=REC_HEAD;
  for(unsigned i=0;i<6;i++){unsigned n=strlen(src_s[i]);if(at+n+1>REC_MAX-4)n=0;memcpy(r+at,src_s[i],n);at+=n+1;}
@@ -365,6 +373,8 @@ static int reuse(const char *rel,uint32_t size,uint32_t date,unsigned *len){
   if(strcmp(old_song.path+10,rel))continue;
   old_cursor=k+1;
   if(old_song.size!=size||old_song.date!=date)return -1;
+  /* 13.0: a record without the picture's type (12.0 and older) is read again */
+  if(old_song.format==FORMAT_MP3&&old_song.pic_len&&!old_song.pic_info)return -1;
   *len=n;return 0;
  }
  return -1;
@@ -600,8 +610,13 @@ static unsigned clock_now(void){unsigned h,l,h2;do{h=*(volatile uint16_t*)0x4000
 #else
 static unsigned clock_now(void){return 0;}
 #endif
-#define COVER_CYCLES (JPEG_MAX_SECONDS*16777216u)
-static unsigned cover_started;
+/* 13.0: a picture's time limit grows with its size: JPEG_MAX_SECONDS plus
+ * one second per 32 KB, at most JPEG_MAX_SECONDS_CAP (256 KB: 13 s). */
+static unsigned cover_cycles(uint32_t bytes){
+ unsigned s=JPEG_MAX_SECONDS+bytes/32768u;
+ return (s<JPEG_MAX_SECONDS_CAP?s:JPEG_MAX_SECONDS_CAP)*16777216u;
+}
+static unsigned cover_started,cover_limit;
 unsigned library_cover_decodes;
 static uint32_t pic_base;
 static int pic_read(void *ctx,uint32_t at,uint8_t *buf,unsigned cap){
@@ -613,15 +628,58 @@ static int pic_read(void *ctx,uint32_t at,uint8_t *buf,unsigned cap){
  if(f_lseek(&probe,pic_base+at)!=FR_OK||f_read(&probe,buf,cap,&got)!=FR_OK)return -1;
  return (int)got;
 }
-static int pic_stop(void *ctx){(void)ctx;folder_yield();return clock_now()-cover_started>COVER_CYCLES;}
-static int song_at(uint32_t pos,uint32_t *id,struct LibSong *s){
- uint8_t b[4];if(rd(&dst,next.perm_off[PERM_ALBUM]+4*pos,b,4))return -1;*id=le32(b);
- if(*id>=next.count||rd(&dst,next.off_off+4**id,b,4))return -1;
+static int pic_stop(void *ctx){(void)ctx;folder_yield();return clock_now()-cover_started>cover_limit;}
+/* ---- 13.0 covers ----
+ * Which pictures are used (both modes): a front cover (ID3 picture type 3, or
+ * a GAC's cover) at most 2:1 wide or tall; another picture type only when it
+ * is nearly square (at most 4:3); larger JPEGs get more time (cover_limit).
+ * A picture that cannot be used marks its song's record (REC_PIC_BAD) and is
+ * not tried again until the file changes; within one update a picture key
+ * (length and FNV-1a of its first 1 KB and last 512 bytes; a GAC's whole
+ * cover) finds an earlier song's result without a decode. Identical reduced
+ * covers share one record (record key, then compared byte by byte); a record
+ * reused from the previous index is found again by its old number. The keys
+ * live in a direct-mapped table of LS_SLOTS (key, cover) pairs after the
+ * decoder's image in the sort buffer; an overwritten slot only costs a
+ * decode or a duplicate record. Providers (the first song of each record)
+ * go to grp_tmp[1].
+ * Off (library_long_scan 0, album_covers): one cover per album and album
+ * artist, or, without an album-artist tag, per album and folder (up to
+ * CSETS per album name): front covers first, then the other pictures.
+ * "Unknown Album" songs get none. On (long_covers): every song with a
+ * picture gets the cover of its own picture. */
+unsigned library_long_scan,library_cover_rebuild;
+#define LS_SLOTS 1024u
+#define LS_FAILED 0xfffffffeu   /* a picture key whose picture is not usable */
+#define LS_HEAD 1024u
+#define LS_TAIL 512u
+_Static_assert(JPEG_WORK_BYTES+2*COVER_PIXELS+LS_SLOTS*8<=SORT_BYTES,"long scan table");
+_Static_assert(LS_HEAD+LS_TAIL<=2*COVER_PIXELS,"picture key buffer");
+static uint32_t *ls_table(void){return (uint32_t*)(void*)(sortbuf+JPEG_WORK_BYTES+2*COVER_PIXELS);}
+static uint32_t ls_get(uint32_t key){uint32_t *t=ls_table()+2*(key%LS_SLOTS);return t[0]==key?t[1]:NO_COVER;}
+static void ls_put(uint32_t key,uint32_t v){uint32_t *t=ls_table()+2*(key%LS_SLOTS);t[0]=key;t[1]=v;}
+static uint32_t rec_at;   /* where song_at / song_rec read the record now in rec */
+static int song_rec(uint32_t id,struct LibSong *s){
+ uint8_t b[4];if(rd(&dst,next.off_off+4*id,b,4))return -1;
  uint32_t at=next.rec_off+le32(b);uint8_t *r=rec;
  if(rd(&dst,at,r,32))return -1;unsigned n=(unsigned)r[0]|(unsigned)r[1]<<8;
  if(n<REC_HEAD||n>REC_MAX||rd(&dst,at+32,r+32,n-32))return -1;
- return decode(r,n,s);
+ rec_at=at;return decode(r,n,s);
 }
+static int song_at(uint32_t pos,uint32_t *id,struct LibSong *s){
+ uint8_t b[4];if(rd(&dst,next.perm_off[PERM_ALBUM]+4*pos,b,4))return -1;*id=le32(b);
+ if(*id>=next.count)return -1;
+ return song_rec(*id,s);
+}
+/* The record in rec (read at rec_at): its picture is not usable. */
+static int mark_bad(void){
+ unsigned n=(unsigned)rec[0]|(unsigned)rec[1]<<8;
+ rec[24]|=REC_PIC_BAD;
+ uint32_t h=fnv(2166136261u,rec,28);h=fnv(h,"\0\0\0\0",4);h=fnv(h,rec+32,n-32);put32(rec+28,h);
+ return wr(&dst,rec_at,rec,32);
+}
+static int has_pic(const struct LibSong *s){return ((s->format==FORMAT_MP3&&s->pic_len)||(s->format==FORMAT_GAC&&s->has_art))&&!s->pic_bad;}
+static int is_front(const struct LibSong *s){return s->format==FORMAT_GAC||s->pic_front;}
 /* A GAC's own RGB555 cover (64x64, or 32x32 doubled), checked against the
  * header's hash. */
 static int gac_cover(const struct LibSong *s,uint16_t *img){
@@ -635,166 +693,159 @@ static int gac_cover(const struct LibSong *s,uint16_t *img){
  }
  f_close(&probe);return e;
 }
-/* A song's reduced cover record: the previous index's record when it was
- * made from this very file, unchanged (size, date, picture position), else
- * the picture decoded (MP3) or read (GAC) now and reduced. img: 8 KB; work:
- * JPEG_WORK_BYTES (the reduction's box table after the decode);
- * out: COVER_REC bytes. */
-static int song_cover(const struct LibSong *s,uint16_t *img,uint8_t *work,uint8_t *out){
- uint32_t old;uint8_t b[4],p[4];
- if(!library_cover_rebuild&&!library_find(s->path,&old)&&probe_song.size==s->size&&probe_song.date==s->date&&probe_song.pic_off==s->pic_off&&probe_song.pic_len==s->pic_len
-    &&!src_read(head.cov_map_off+4*old,b,4)&&le32(b)<head.cov_count&&!src_read(head.cov_src_off+4*le32(b),p,4)&&le32(p)==old
-    &&!src_read(head.cov_img_off+(uint64_t)le32(b)*COVER_BYTES,out,COVER_BYTES))return 0;
- int e=-1;library_cover_decodes++;
- if(s->format==FORMAT_GAC)e=gac_cover(s,img);
- else{
-  if(f_open(&probe,s->path,FA_READ)!=FR_OK)return -1;
-  if(s->pic_off<f_size(&probe)&&s->pic_len<=f_size(&probe)-s->pic_off){
-   pic_base=s->pic_off;cover_started=clock_now();
-   e=jpeg_dc_cover(pic_read,pic_stop,0,s->pic_len,work,img);
-  }
-  f_close(&probe);
- }
- if(e)return -1;
- jpeg_cover_reduce(img,out,work);
- return 0;
-}
-/* One cover per album group (never "Unknown Album"): the first song in album
- * order (MP3 with a picture, or GAC with a cover) whose picture is usable.
- * Then the per-song map, in chunks of ids. */
-static int album_covers(void){
- uint16_t *img=(uint16_t*)(sortbuf+JPEG_WORK_BYTES);uint8_t *out=sortbuf+8*COVER_PIXELS;   /* after the reduction's work */
- uint32_t groups=g_count[GROUP_ALBUMS],*map=(uint32_t*)sortbuf;   /* map: sortbuf[0, 32 KB) */
- f_close(&run_a);
- if(f_open(&run_a,temp_name(1),FA_READ|FA_WRITE|FA_CREATE_ALWAYS)!=FR_OK)return -1;
- for(uint32_t g=0;g<groups;g++){
-  uint8_t e[GROUP_BYTES];uint32_t cov=NO_COVER,id,src=NO_COVER;
-  if(rd(&dst,next.grp_off[GROUP_ALBUMS]+GROUP_BYTES*g,e,GROUP_BYTES))return -1;
-  uint32_t start=le32(e),n=le32(e+4);
-  if(song_at(start,&id,&ks))return -1;
-  if(ks.album[0])for(uint32_t j=start;j<start+n;j++){
-   if(j!=start&&song_at(j,&id,&ks))return -1;
-   if(!(ks.format==FORMAT_MP3&&ks.pic_len)&&!(ks.format==FORMAT_GAC&&ks.has_art))continue;
-   if(song_cover(&ks,img,sortbuf,out))continue;
-   if(wr(&dst,next.cov_img_off+next.cov_count*COVER_BYTES,out,COVER_BYTES))return -1;
-   cov=next.cov_count++;src=id;break;
-  }
-  uint8_t o[8];put32(o,cov);put32(o+4,src);if(appendf(&run_a,o,8))return -1;
-  folder_yield();if(report&&report(7,g+1))return -2;
- }
- if(f_sync(&run_a)!=FR_OK)return -1;
- const uint32_t chunk=32768/4;
- for(uint32_t base=0;base<next.count;base+=chunk){
-  uint32_t n=next.count-base<chunk?next.count-base:chunk;
-  memset(map,0xff,n*4);
-  for(uint32_t g=0;g<groups;g++){
-   uint8_t e[GROUP_BYTES],o[4];
-   if(rd(&run_a,8*g,o,4))return -1;uint32_t cov=le32(o);if(cov==NO_COVER)continue;
-   if(rd(&dst,next.grp_off[GROUP_ALBUMS]+GROUP_BYTES*g,e,GROUP_BYTES))return -1;
-   uint32_t start=le32(e),cnt=le32(e+4);
-   for(uint32_t j=0;j<cnt;j+=128){
-    uint32_t k=cnt-j<128?cnt-j:128;uint8_t *ids=sortbuf+32768;
-    if(rd(&dst,next.perm_off[PERM_ALBUM]+4*(start+j),ids,4*k))return -1;
-    for(uint32_t i=0;i<k;i++){uint32_t id=le32(ids+4*i);if(id>=base&&id-base<n)map[id-base]=cov;}
-   }
-  }
-  for(uint32_t i=0;i<n;i++){uint32_t v=map[i];put32((uint8_t*)&map[i],v);}
-  if(wr(&dst,next.cov_map_off+4*base,map,4*n))return -1;
-  folder_yield();
- }
- /* Providers, in cover order (covers were numbered in group order). */
- next.cov_src_off=next.cov_img_off+next.cov_count*COVER_BYTES;
- for(uint32_t g=0,k=0;g<groups;g++){
-  uint8_t o[8];if(rd(&run_a,8*g,o,8))return -1;
-  if(le32(o)!=NO_COVER&&wr(&dst,next.cov_src_off+4*k++,o+4,4))return -1;
- }
- return 0;
-}
-/* ---- 12.0 Album cover long scan ----
- * Off (library_long_scan 0): album_covers() above, unchanged. On: every song
- * with a picture gets the cover of its own picture, in record id order (the
- * map is written in order). Identical pictures share one record: a picture
- * key (length and FNV-1a of its first 1 KB and last 512 bytes; a GAC's whole
- * cover) finds an earlier song's record without a decode, and a record key
- * (FNV-1a of the reduced record, then compared byte by byte) folds equal
- * results. Both keys live in a direct-mapped table of LS_SLOTS (key, cover)
- * pairs after the decoder's image in the sort buffer; an overwritten slot
- * only costs a decode or a duplicate record. Providers: the first song of
- * each record. */
-unsigned library_long_scan,library_cover_rebuild;
-#define LS_SLOTS 1024u
-#define LS_FAILED 0xfffffffeu   /* a picture key whose picture is not usable */
-#define LS_HEAD 1024u
-#define LS_TAIL 512u
-_Static_assert(JPEG_WORK_BYTES+2*COVER_PIXELS+LS_SLOTS*8<=SORT_BYTES,"long scan table");
-_Static_assert(LS_HEAD+LS_TAIL<=2*COVER_PIXELS,"picture key buffer");
-static uint32_t *ls_table(void){return (uint32_t*)(void*)(sortbuf+JPEG_WORK_BYTES+2*COVER_PIXELS);}
-static uint32_t ls_get(uint32_t key){uint32_t *t=ls_table()+2*(key%LS_SLOTS);return t[0]==key?t[1]:NO_COVER;}
-static void ls_put(uint32_t key,uint32_t v){uint32_t *t=ls_table()+2*(key%LS_SLOTS);t[0]=key;t[1]=v;}
-static int song_rec(uint32_t id,struct LibSong *s){
- uint8_t b[4];if(rd(&dst,next.off_off+4*id,b,4))return -1;
- uint32_t at=next.rec_off+le32(b);uint8_t *r=rec;
- if(rd(&dst,at,r,32))return -1;unsigned n=(unsigned)r[0]|(unsigned)r[1]<<8;
- if(n<REC_HEAD||n>REC_MAX||rd(&dst,at+32,r+32,n-32))return -1;
- return decode(r,n,s);
-}
-/* *cov: the cover record of song `id` (NO_COVER: none usable). */
-static int long_cover(const struct LibSong *s,uint32_t id,uint32_t *cov){
+/* *cov: the cover record of song `id` (s, read into rec by song_rec /
+ * song_at), NO_COVER when its picture is not usable (its record is marked
+ * then, unless the card could not be read). */
+static int pic_cover(const struct LibSong *s,uint32_t id,uint32_t *cov){
  uint16_t *img=(uint16_t*)(void*)(sortbuf+JPEG_WORK_BYTES);uint8_t *out=sortbuf+8*COVER_PIXELS,*pk=(uint8_t*)img;
- uint32_t old,pkey=0,v;uint8_t b[4],p[4];int e=-1;
+ uint32_t old,pkey=0,okey=0,v;uint8_t b[4],p[4];int e=-1,bad=0;
  *cov=NO_COVER;
  /* The previous index's record of this unchanged file: one it provided, or
-  * any of its own when that index was built with the long scan too. */
- if(!library_cover_rebuild&&!library_find(s->path,&old)&&probe_song.size==s->size&&probe_song.date==s->date&&probe_song.pic_off==s->pic_off&&probe_song.pic_len==s->pic_len
-    &&!src_read(head.cov_map_off+4*old,b,4)&&le32(b)<head.cov_count&&!src_read(head.cov_src_off+4*le32(b),p,4)&&(le32(p)==old||library_long_scan)
-    &&!src_read(head.cov_img_off+(uint64_t)le32(b)*COVER_BYTES,out,COVER_BYTES))e=0;
- else if(s->format==FORMAT_GAC){
-  if(gac_cover(s,img))return 0;
+  * any of its own when that index was built with the long scan too (and by
+  * 13.0's picture rules: a 12.0 record has no pic_info). Found again by its
+  * old number: no second read, no comparison. */
+ if(!library_cover_rebuild&&!library_find(s->path,&old)&&probe_song.pic_info&&probe_song.size==s->size&&probe_song.date==s->date&&probe_song.pic_off==s->pic_off&&probe_song.pic_len==s->pic_len
+    &&!src_read(head.cov_map_off+4*old,b,4)&&le32(b)<head.cov_count&&!src_read(head.cov_src_off+4*le32(b),p,4)&&(le32(p)==old||library_long_scan)){
+  okey=fnv(2166136261u^'O',b,4);
+  if((v=ls_get(okey))<next.cov_count){*cov=v;return 0;}
+  if(!src_read(head.cov_img_off+(uint64_t)le32(b)*COVER_BYTES,out,COVER_BYTES))e=0;
+ }
+ if(e&&s->format==FORMAT_GAC){
+  if(gac_cover(s,img)){bad=1;goto done;}
   pkey=fnv(2166136261u^'G',img,2*COVER_PIXELS);
-  if((v=ls_get(pkey))!=NO_COVER){*cov=v==LS_FAILED?NO_COVER:v;return 0;}
+  if((v=ls_get(pkey))!=NO_COVER){*cov=v==LS_FAILED?NO_COVER:v;return v==LS_FAILED?mark_bad():0;}
   library_cover_decodes++;e=0;
  }
- else{
+ else if(e){
   if(f_open(&probe,s->path,FA_READ)!=FR_OK)return 0;
   uint32_t len=s->pic_len,n1=len<LS_HEAD?len:LS_HEAD,n2=len-n1<LS_TAIL?len-n1:LS_TAIL;UINT got=0;
   if(s->pic_off<f_size(&probe)&&len<=f_size(&probe)-s->pic_off
      &&f_lseek(&probe,s->pic_off)==FR_OK&&f_read(&probe,pk,n1,&got)==FR_OK&&got==n1
      &&(!n2||(f_lseek(&probe,s->pic_off+len-n2)==FR_OK&&f_read(&probe,pk+n1,n2,&got)==FR_OK&&got==n2))){
-   put32(b,len);pkey=fnv(fnv(2166136261u^'P',b,4),pk,n1+n2);
-   if((v=ls_get(pkey))!=NO_COVER){f_close(&probe);*cov=v==LS_FAILED?NO_COVER:v;return 0;}
+   put32(b,len);pkey=fnv(fnv(2166136261u^(s->pic_front?'P':'Q'),b,4),pk,n1+n2);
+   if((v=ls_get(pkey))!=NO_COVER){f_close(&probe);*cov=v==LS_FAILED?NO_COVER:v;return v==LS_FAILED?mark_bad():0;}
    library_cover_decodes++;
-   pic_base=s->pic_off;cover_started=clock_now();
+   pic_base=s->pic_off;cover_started=clock_now();cover_limit=cover_cycles(len);
+   jpeg_dc_aspect_q8=s->pic_front?JPEG_FRONT_ASPECT:JPEG_OTHER_ASPECT;
    e=jpeg_dc_cover(pic_read,pic_stop,0,len,sortbuf,img);
+   jpeg_dc_aspect_q8=0;
+   if(e)bad=e!=JPEG_ERR_IO;
   }
   f_close(&probe);
-  if(e){if(pkey)ls_put(pkey,LS_FAILED);return 0;}
+  if(e){if(pkey)ls_put(pkey,bad?LS_FAILED:NO_COVER);goto done;}
  }
  if(pkey)jpeg_cover_reduce(img,out,sortbuf);
  /* Equal records share one: the key finds a candidate, the bytes decide. */
- uint32_t rkey=fnv(2166136261u^'R',out,COVER_BYTES);
- if((v=ls_get(rkey))<next.cov_count&&!rd(&dst,next.cov_img_off+(uint64_t)v*COVER_BYTES,img,COVER_BYTES)&&!memcmp(img,out,COVER_BYTES))*cov=v;
- else{
-  put32(b,id);
-  if(wr(&dst,next.cov_img_off+(uint64_t)next.cov_count*COVER_BYTES,out,COVER_BYTES)||appendf(&run_a,b,4))return -1;
-  *cov=next.cov_count++;ls_put(rkey,*cov);
- }
+ {uint32_t rkey=fnv(2166136261u^'R',out,COVER_BYTES);
+  if((v=ls_get(rkey))<next.cov_count&&!rd(&dst,next.cov_img_off+(uint64_t)v*COVER_BYTES,img,COVER_BYTES)&&!memcmp(img,out,COVER_BYTES))*cov=v;
+  else{
+   put32(b,id);
+   if(wr(&dst,next.cov_img_off+(uint64_t)next.cov_count*COVER_BYTES,out,COVER_BYTES)||appendf(&grp_tmp[1],b,4))return -1;
+   *cov=next.cov_count++;ls_put(rkey,*cov);
+  }}
  if(pkey)ls_put(pkey,*cov);
+ if(okey)ls_put(okey,*cov);
+ return 0;
+done:
+ return bad?mark_bad():0;
+}
+/* The cover pass's temporary files: grp_tmp[0] scratch, grp_tmp[1] providers. */
+static int covers_begin(void){
+ memset(ls_table(),0xff,LS_SLOTS*8);
+ f_close(&run_a);f_close(&grp_tmp[0]);f_close(&grp_tmp[1]);
+ if(f_open(&run_a,temp_name(1),FA_READ|FA_WRITE|FA_CREATE_ALWAYS)!=FR_OK
+    ||f_open(&grp_tmp[0],temp_name(2),FA_READ|FA_WRITE|FA_CREATE_ALWAYS)!=FR_OK
+    ||f_open(&grp_tmp[1],temp_name(3),FA_READ|FA_WRITE|FA_CREATE_ALWAYS)!=FR_OK)return -1;
  return 0;
 }
-static int long_covers(void){
- memset(ls_table(),0xff,LS_SLOTS*8);
- f_close(&run_a);
- if(f_open(&run_a,temp_name(1),FA_READ|FA_WRITE|FA_CREATE_ALWAYS)!=FR_OK)return -1;
- for(uint32_t id=0;id<next.count;id++){
-  uint32_t cov=NO_COVER;uint8_t o[4];
-  if(song_rec(id,&ks))return -1;
-  if((ks.format==FORMAT_MP3&&ks.pic_len)||(ks.format==FORMAT_GAC&&ks.has_art)){int e=long_cover(&ks,id,&cov);if(e)return e;}
-  put32(o,cov);if(wr(&dst,next.cov_map_off+4*id,o,4))return -1;
-  folder_yield();if(report&&report(7,id+1))return -2;
+static int covers_end(void){
+ if(f_sync(&grp_tmp[1])!=FR_OK)return -1;
+ next.cov_src_off=next.cov_img_off+next.cov_count*COVER_BYTES;
+ return copy_file(&grp_tmp[1],next.cov_count*4,next.cov_src_off);
+}
+/* Off: cover sets of an album name. */
+#define CSETS 32u
+static struct {uint32_t key,cov;uint8_t other;} cset[CSETS];
+static unsigned csets;
+static unsigned cset_of(const struct LibSong *s){
+ uint32_t k;
+ if(s->album_artist[0])k=fnv(2166136261u^'A',s->album_artist,(unsigned)strlen(s->album_artist));
+ else{const char *e=s->path;for(const char *q=s->path;*q;q++)if(*q=='/')e=q;k=fnv(2166136261u^'F',s->path,(unsigned)(e-s->path));}
+ for(unsigned i=0;i<csets;i++)if(cset[i].key==k)return i;
+ if(csets==CSETS)return CSETS-1;   /* (more sets share the last) */
+ cset[csets].key=k;cset[csets].cov=NO_COVER;cset[csets].other=0;return csets++;
+}
+static int album_covers(void){
+ uint32_t groups=g_count[GROUP_ALBUMS];uint8_t *buf=sortbuf;   /* buf: 1 KB in the decoder's work area, between decodes */
+ if(covers_begin())return -1;
+ for(uint32_t g=0;g<groups;g++){
+  uint8_t e[GROUP_BYTES];uint32_t id;
+  if(rd(&dst,next.grp_off[GROUP_ALBUMS]+GROUP_BYTES*g,e,GROUP_BYTES))return -1;
+  uint32_t start=le32(e),n=le32(e+4);
+  if(song_at(start,&id,&ks))return -1;
+  csets=0;
+  int named=ks.album[0]!=0;
+  /* front covers, noting the sets that have other pictures */
+  for(uint32_t j=start;j<start+n;j++){
+   if(j!=start&&song_at(j,&id,&ks))return -1;
+   uint8_t k=named?(uint8_t)cset_of(&ks):0;
+   if(appendf(&grp_tmp[0],&k,1))return -1;
+   if(!named||cset[k].cov!=NO_COVER||!has_pic(&ks))continue;
+   if(!is_front(&ks)){cset[k].other=1;continue;}
+   int r=pic_cover(&ks,id,&cset[k].cov);if(r)return r;
+   if(cset[k].cov==NO_COVER){folder_yield();if(report&&report(7,g+1))return -2;}
+  }
+  /* then the other pictures, for sets still without a cover */
+  unsigned want=0;for(unsigned i=0;i<csets;i++)want|=cset[i].cov==NO_COVER&&cset[i].other;
+  for(uint32_t j=start;want&&j<start+n;j++){
+   if(song_at(j,&id,&ks))return -1;
+   unsigned k=cset_of(&ks);
+   if(cset[k].cov!=NO_COVER||!has_pic(&ks)||is_front(&ks))continue;
+   int r=pic_cover(&ks,id,&cset[k].cov);if(r)return r;
+  }
+  /* each song's cover, in album order */
+  if(f_sync(&grp_tmp[0])!=FR_OK)return -1;
+  for(uint32_t j=0;j<n;j+=256){
+   uint32_t c=n-j<256?n-j:256;
+   if(rd(&grp_tmp[0],start+j,buf,c))return -1;
+   for(uint32_t i=0;i<c;i++){uint8_t o[4];put32(o,named?cset[buf[i]].cov:NO_COVER);if(appendf(&run_a,o,4))return -1;}
+  }
+  if(f_lseek(&grp_tmp[0],start+n)!=FR_OK)return -1;
+  folder_yield();if(report&&report(7,g+1))return -2;
  }
  if(f_sync(&run_a)!=FR_OK)return -1;
- next.cov_src_off=next.cov_img_off+next.cov_count*COVER_BYTES;
- return copy_file(&run_a,next.cov_count*4,next.cov_src_off);
+ /* the per-song map: album order -> record ids, a chunk of ids at a time */
+ uint32_t *map=(uint32_t*)(void*)sortbuf;const uint32_t chunk=32768/4;   /* map: sortbuf[0, 32 KB) */
+ for(uint32_t base=0;base<next.count;base+=chunk){
+  uint32_t n=next.count-base<chunk?next.count-base:chunk;
+  memset(map,0xff,n*4);
+  for(uint32_t j=0;j<next.count;j+=128){
+   uint32_t k=next.count-j<128?next.count-j:128;uint8_t *ids=sortbuf+32768,*cv=sortbuf+32768+512;
+   if(rd(&dst,next.perm_off[PERM_ALBUM]+4*j,ids,4*k)||rd(&run_a,4*j,cv,4*k))return -1;
+   for(uint32_t i=0;i<k;i++){uint32_t id=le32(ids+4*i);if(id>=base&&id-base<n)map[id-base]=le32(cv+4*i);}
+  }
+  for(uint32_t i=0;i<n;i++){uint32_t v=map[i];put32((uint8_t*)&map[i],v);}
+  if(wr(&dst,next.cov_map_off+4*base,map,4*n))return -1;
+  folder_yield();
+ }
+ return covers_end();
+}
+static int long_covers(void){
+ uint8_t *map=sortbuf;unsigned m=0;   /* map entries in id order, 128 at a time (sortbuf[0, 512) is free between decodes) */
+ if(covers_begin())return -1;
+ for(uint32_t id=0;id<next.count;id++){
+  uint32_t cov=NO_COVER;
+  if(song_rec(id,&ks))return -1;
+  if(has_pic(&ks)){
+   if(m){if(wr(&dst,next.cov_map_off+4*(id-m),map,4*m))return -1;m=0;}   /* (the decoder uses sortbuf) */
+   int e=pic_cover(&ks,id,&cov);if(e)return e;
+  }
+  put32(map+4*m++,cov);
+  if(m==128){if(wr(&dst,next.cov_map_off+4*(id+1-m),map,4*m))return -1;m=0;}
+  folder_yield();if(report&&report(7,id+1))return -2;
+ }
+ if(m&&wr(&dst,next.cov_map_off+4*(next.count-m),map,4*m))return -1;
+ return covers_end();
 }
 static void close_all(void){
  f_close(&dst);f_close(&tmp_off);f_close(&run_a);for(unsigned g=0;g<GROUP_COUNT;g++)f_close(&grp_tmp[g]);

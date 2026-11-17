@@ -67,8 +67,16 @@ def source_inputs(directory: Path, offline: bool = False) -> dict:
         if not path.exists():
             if offline:
                 raise FileNotFoundError(f'Offline source missing: {path}')
-            with urllib.request.urlopen(item['url'], timeout=120) as response:
-                path.write_bytes(response.read())
+            errors = []
+            for url in [item['url'], *item.get('mirrors', [])]:
+                try:
+                    with urllib.request.urlopen(url, timeout=120) as response:
+                        path.write_bytes(response.read())
+                    break
+                except OSError as error:
+                    errors.append(f'{url}: {error}')
+            else:
+                raise RuntimeError('Source download failed: ' + '; '.join(errors))
         if sha256(path) != item['sha256']:
             raise ValueError(f'Source SHA256 mismatch: {path}; remove bad input explicitly')
     return lock

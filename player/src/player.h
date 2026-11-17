@@ -6,7 +6,8 @@ struct PlayerStats {uint32_t magic,ready,fatal,decoded_frames,decode_cycles,conv
  conv_cycles,conv_frames,conv_result,   /* conversion: cycles, 32768 Hz frames written, last result */
  /* v2.2 Volume Boost from the stream anchor: the level there, the number of
   * changes since, and the first BOOST_LOG of them (ring position << 2 | level). */
- anchor_boost,boost_changes,boost_at[8];};
+ anchor_boost,boost_changes,boost_at[8],
+ update_ms;   /* 13.0: Update Library's time in ms (update_cycles wraps after 256 s) */};
 #define BOOST_LOG 8u
 extern volatile struct PlayerStats stats;
 

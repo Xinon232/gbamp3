@@ -1,5 +1,39 @@
 # Modification record
 
+## 13.0 — Halim Jarrar, 2026-11-17
+
+Based on 12.0. No third-party source in this repository changed (gbaSD
+unchanged, 3ee9d37).
+
+- Covers (`library.c`, `library.h`): one routine, `pic_cover()`, gives a
+  song the cover of its picture in both modes. Picture rules: a front cover
+  (ID3 picture type 3, or a GAC's cover) at most 2:1, another picture type
+  at most 4:3 (`jpeg_dc_aspect_q8`, checked at the frame header,
+  `JPEG_ERR_SHAPE`, `jpeg_dc.c` / `jpeg_dc.h`); the time limit per picture
+  is 5 s plus 1 s per 32 KB, at most 13 s (`cover_cycles`). A picture that
+  cannot be used (not an I/O error) sets record flag 32 (`REC_PIC_BAD`, the
+  record's checksum written again); the walk copies the record while the
+  file is unchanged, so it is not tried again. Within an update the picture
+  key (now also by picture type) remembers failures, as the 12.0 long scan.
+- Off (`album_covers`): cover sets per album name and album artist, or
+  folder without an album-artist tag (up to 32 per album name), front
+  covers first, then other pictures; each song's cover is written in album
+  order to TMPR.DAT and the map is filled a chunk of ids at a time from the
+  album permutation. Providers of both modes go to TMPG1.DAT.
+- On (`long_covers`): the map is written 128 entries at a time; a record
+  reused from the previous index is found again by its old number (no
+  second read and comparison).
+- Records (byte 24): 8 front cover (`meta.c` sets `SongMeta.pic_front`, the
+  former pad byte), 16 the picture flags are known: a 12.0 record of an MP3
+  with a picture lacks it and is read again, and its old cover is not
+  reused (`probe_song.pic_info`).
+- `main.c`: `stats.update_ms` (appended to PlayerStats), Update Library's
+  time added up in `player_service()` (`update_cycles` wraps after 256 s).
+- Tests: `tests/test_v13_covers.py` (host: picture rules, albums of one
+  name, remembered failures, a 12.0 library), `tests/test_v12_long_scan.py`
+  adapted (covers compared instead of index bytes; decode counts of 13.0),
+  `tests/measure_long_scan.py` (Update Library times, Off / On).
+
 ## 12.0 — Halim Jarrar, 2026-11-11
 
 Based on 11.0. No third-party source in this repository changed (gbaSD

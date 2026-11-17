@@ -12,6 +12,7 @@ struct LibSong {
  uint32_t id,size,date,duration_ms,rate;
  uint16_t track,disc;
  uint8_t format,channels,has_art,title_from_name,vbr;
+ uint8_t pic_front,pic_info,pic_bad;   /* 13.0: front cover; flags known; picture not usable */
  uint16_t bitrate;
  uint32_t pic_off,pic_len;             /* MP3 embedded JPEG (0: none) */
  char path[STORAGE_PATH];              /* full, "0:/gbamp3/..." */
@@ -47,8 +48,8 @@ int library_find(const char *path,uint32_t *id);
 int library_cover(uint32_t id,volatile uint16_t *out);   /* v1.8: 64x64 (a v4/v5 index's 32x32 doubled); out may be VRAM */
 extern unsigned library_cover_decodes;   /* pictures decoded by updates (tests, telemetry) */
 /* 12.0 Secret Settings > Album cover long scan, set by the caller before an
- * update: 0 one cover per album (the index is byte for byte the 11.0/12.0
- * one), 1 every song with a picture its own cover, identical pictures and
+ * update: 0 one cover per album and album artist, or folder without an
+ * album-artist tag (13.0; 12.0: per album name), 1 every song with a picture its own cover, identical pictures and
  * covers sharing one record. library_cover_rebuild: decode every picture
  * again (no record of the previous index is reused). */
 extern unsigned library_long_scan,library_cover_rebuild;
