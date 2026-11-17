@@ -674,7 +674,7 @@ int player_delete_configuration(void){
  transition_done=pending_end=transition_end=0;
  struct QueueSource *q=&tmp_src;memset(q,0,sizeof(*q));queue_set(q,0);queue_overlay_import(0,0);
  state_dirty=0;int e=state_delete_configuration();
- memset(&app,0,sizeof(app));app.stereo=1;app.flags=STATE_HOLD_RESET_DONE;menu_order_reset(&app.menus);   /* Hold START to unlock On */
+ memset(&app,0,sizeof(app));app.stereo=1;app.flags=STATE_HOLD_RESET_DONE;app.new_playlist_top=STATE_NPT_DEFAULT;menu_order_reset(&app.menus);   /* Hold START to unlock On; 13.1: Album cover long scan On */
  queue_set_mode(MODE_NORMAL);boost_gain=256;stats.boost=0;stats.browser_order=MODE_NORMAL;
  stats.sound_mode=stats.cache_sound_mode=3;stats.output_mode=0;
  return e;

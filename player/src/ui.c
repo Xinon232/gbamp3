@@ -524,7 +524,7 @@ static void draw_info(struct Screen *s){
 #define ABOUT_PAGES 8
 static const char *const about_titles[ABOUT_PAGES]={"About","Controls","License","MP3 decoder","SD card and files","Text and fonts","More credits","Secret Settings"};
 static const char *const about_pages[ABOUT_PAGES][8]={
- {"gbamp3 13.0","(c) 2026 Halim Jarrar","","GPL-3.0-or-later with","Helix linking permission","No warranty.","Source:","github.com/Xinon232/gbamp3"},
+ {"gbamp3 13.1","(c) 2026 Halim Jarrar","","GPL-3.0-or-later with","Helix linking permission","No warranty.","Source:","github.com/Xinon232/gbamp3"},
  {"Start: Options   Select: Settings","A: Open / Play   B: Back","L+R: Lock   Start: Unlock","Now Playing: Left / Right","tap: prev / next, hold: seek","Up / Down: Volume Boost level","Playlist: hold A + Up / Down","Search: Start + A B L R Up Down"},
  {"gbamp3 is free software under","the GNU GPL version 3 or later,","with an additional permission","for linking with the Helix MP3","decoder (see NOTICES.md).","Contact: halimj.itch.io","gba@halim-jarrar.de","Credits: next pages."},
  {"Helix MP3 decoder","Helix DNA Client technology","included. (c) 1995-2002","RealNetworks, Inc.","All rights reserved.","License: RPSL 1.0","By Jon Recker and Ken Cooke;","Arduino version: Phil Schatzmann"},

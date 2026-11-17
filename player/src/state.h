@@ -15,9 +15,14 @@ struct AppState {
  /* v1.8 Secret Settings, in what was struct padding (0 in older files):
   * Show Songs 0 MP3 + GAC, 1 only MP3, 2 only GAC; + New Playlist on top;
   * letter box off. */
- uint8_t song_types,new_playlist_top,flags;   /* new_playlist_top: bit 0 New Playlist on top, v2.2: bit 1 Hold START to unlock Off (clear, the default and in older files: On), 11.0: bit 2 + Add Songs on top of playlists, 12.0: bit 3 Album cover long scan On (clear, the default and in older files: Off), bit 4 the library's covers were built with the long scan (bit 3 != bit 4: the next Update Library rebuilds every cover); flags: bit 0 letter box off, v1.9: bit 1 Rename files on, bit 2 Delete files on; bit 7 (11.0) Hold START to unlock was reset to On once (v2.2 test build: Hold START to unlock on; cleared on loading by 10.0) */
+ uint8_t song_types,new_playlist_top,flags;   /* new_playlist_top: bit 0 New Playlist on top, v2.2: bit 1 Hold START to unlock Off (clear, the default and in older files: On), 11.0: bit 2 + Add Songs on top of playlists, 12.0: bit 3 Album cover long scan On (13.1: set by default and once in older files, see bit 5), bit 4 the library's covers were built with the long scan (bit 3 != bit 4: the next Update Library rebuilds every cover), 13.1: bit 5 the long scan was switched On once; flags: bit 0 letter box off, v1.9: bit 1 Rename files on, bit 2 Delete files on; bit 7 (11.0) Hold START to unlock was reset to On once (v2.2 test build: Hold START to unlock on; cleared on loading by 10.0) */
 };
 #define STATE_HOLD_RESET_DONE 0x80u
+/* 13.1: new_playlist_top bits 3 (Album cover long scan) and 5 (it was
+ * switched On once: the default is On, older settings get it On once). */
+#define STATE_LONG_SCAN 0x08u
+#define STATE_LONG_SCAN_DONE 0x20u
+#define STATE_NPT_DEFAULT (STATE_LONG_SCAN|STATE_LONG_SCAN_DONE)
 /* Defaults on missing/corrupt files. Returns 1 when a saved state was read. */
 int state_load(struct AppState *s);
 /* Two-slot write: the newer copy is only replaced after the other is committed. */

@@ -39,7 +39,7 @@ static int read_slot(unsigned i,struct Wire *out){
  return 1;
 }
 int state_load(struct AppState *s){
- memset(s,0,sizeof(*s));s->stereo=1;s->flags=STATE_HOLD_RESET_DONE;menu_order_reset(&s->menus);
+ memset(s,0,sizeof(*s));s->stereo=1;s->flags=STATE_HOLD_RESET_DONE;s->new_playlist_top=STATE_NPT_DEFAULT;menu_order_reset(&s->menus);
  static struct Wire b;int va=read_slot(0,&w),vb=read_slot(1,&b);
  if(!va&&!vb){generation=0;newest=1;return 0;}
  newest=vb&&(!va||b.generation>w.generation);
@@ -49,11 +49,14 @@ int state_load(struct AppState *s){
  if(s->boost_on>1||s->boost_level>3){s->boost_on=0;s->boost_level=0;}
  if(s->auto_update>1)s->auto_update=0;
  if(s->song_files>1)s->song_files=0;
- if(s->song_types>2)s->song_types=0;if(s->new_playlist_top>31)s->new_playlist_top=0;s->flags&=0xfe;if(((s->flags>>3)&3)==3)s->flags&=(uint8_t)~0x18u;if(((s->flags>>5)&3)==3)s->flags&=(uint8_t)~0x60u;   /* bits 1-2 file operations, 3-4 Letter Box, 5-6 conversion, 7 the 11.0 Hold START reset is done (new_playlist_top bit 1 holds that switch, set = Off; bit 2, 11.0: + Add Songs on top) */
+ if(s->song_types>2)s->song_types=0;if(s->new_playlist_top>63)s->new_playlist_top=0;s->flags&=0xfe;if(((s->flags>>3)&3)==3)s->flags&=(uint8_t)~0x18u;if(((s->flags>>5)&3)==3)s->flags&=(uint8_t)~0x60u;   /* bits 1-2 file operations, 3-4 Letter Box, 5-6 conversion, 7 the 11.0 Hold START reset is done (new_playlist_top bit 1 holds that switch, set = Off; bit 2, 11.0: + Add Songs on top) */
  /* 11.0: Hold START to unlock is On once for every card, also where it was
   * switched Off before (10.0 and the v2.2 test build cleared bit 7 on
   * loading); a later Off is saved with bit 7 set and kept. */
  if(!(s->flags&STATE_HOLD_RESET_DONE)){s->new_playlist_top&=(uint8_t)~2u;s->flags|=STATE_HOLD_RESET_DONE;}
+ /* 13.1: Album cover long scan is On once for every card, also where it was
+  * Off (12.0 / 13.0 settings); a later Off is saved with bit 5 set and kept. */
+ if(!(s->new_playlist_top&STATE_LONG_SCAN_DONE))s->new_playlist_top|=STATE_LONG_SCAN|STATE_LONG_SCAN_DONE;
  if(!menu_order_validate(&s->menus))menu_order_reset(&s->menus);
  menu_order_upgrade(&s->menus);   /* v1.6: Show songs as */
  return 1;

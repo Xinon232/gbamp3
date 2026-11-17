@@ -1,5 +1,20 @@
 # Modification record
 
+## 13.1 — Halim Jarrar, 2026-11-17
+
+Based on 13.0. No third-party source changed.
+
+- Album cover long scan On by default (`state.h`, `state.c`, `main.c`):
+  new_playlist_top bit 5 (`STATE_LONG_SCAN_DONE`) records that the switch was
+  set On once; a state without it gets bits 3 and 5 set on loading (as the
+  11.0 Hold START reset), values over 63 (was 31) are reset; a fresh state
+  starts with `STATE_NPT_DEFAULT` (bits 3 and 5).
+- Tests: `tests/test_v11_prune.py` (state values), `run_ui.long_scan_off()`
+  (a card whose saved state has the long scan Off, switched in Secret
+  Settings by the ROM) for the tests of the album covers (Off), the state
+  byte checks masked to their bits, `tests/test_v12_long_scan_guest.py`
+  starts On.
+
 ## 13.0 — Halim Jarrar, 2026-11-17
 
 Based on 12.0. No third-party source in this repository changed (gbaSD
