@@ -1,5 +1,20 @@
 # Modification record
 
+## 13.2 — Halim Jarrar, 2026-11-20
+
+Based on 13.1. No third-party source changed.
+
+- Unlock (`ui.c`): the screen is switched on only once the first picture drawn
+  after unlocking has been shown (`unlock_dark`; at most 60 frames), not at
+  once with the page from before the lock. Test:
+  `tests/test_v132_unlock_picture_guest.py`.
+- Converter 3.3 (`tools/gbacache.py`, `tools/gbacache_gui.py`,
+  `tools/gac4.py`, `tools/gac_native.c`, `tools/gac_native.py`,
+  `tools/build_native.py`, `tools/converter_smoke.py`): several songs in
+  parallel processes (`convert_batch`, `--jobs`), the rate-distortion choice
+  of a subblock in C (`gac_choose`, helper ABI 2); output byte-identical to
+  3.2.
+
 ## 13.1 — Halim Jarrar, 2026-11-17
 
 Based on 13.0. No third-party source changed.

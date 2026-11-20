@@ -18,12 +18,15 @@ def _load():
         try:
             lib = ctypes.CDLL(str(base/name))
             lib.gac_native_abi.restype = ctypes.c_int
-            if lib.gac_native_abi() != 1:
+            if lib.gac_native_abi() != 2:
                 continue
             d = np.ctypeslib.ndpointer(dtype=np.float64, flags='C_CONTIGUOUS')
             i = np.ctypeslib.ndpointer(dtype=np.int64, flags='C_CONTIGUOUS')
             lib.gac_inner.argtypes = [ctypes.c_int64, ctypes.c_int64, d, i, d, ctypes.c_double, d, d]
             lib.gac_inner.restype = None
+            lib.gac_choose.argtypes = [ctypes.c_int64, ctypes.c_int64, d, i, d, i, i, ctypes.c_double, d, d, d,
+                                       ctypes.c_double, i, i, i, i, i]
+            lib.gac_choose.restype = None
             out = np.ctypeslib.ndpointer(dtype=np.int32, flags='C_CONTIGUOUS')
             lib.gac_decode.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, out]
             lib.gac_decode.restype = ctypes.c_int
@@ -39,3 +42,13 @@ LIB = _load()
 def inner(tf, c, step, dz, hk, qk):
     LIB.gac_inner(len(tf), step.shape[1], np.ascontiguousarray(tf),
                   np.ascontiguousarray(c), np.ascontiguousarray(step), dz, hk, qk)
+
+
+def choose(tf, c, step, idx, cur, dz, hk, qk, weight, lam, len_tab, hlen):
+    """gac_choose: (chosen candidate, its table, its bits) per stream."""
+    n = len(tf)
+    ok, otab, obits = (np.empty(n, np.int64) for _ in range(3))
+    LIB.gac_choose(n, step.shape[1], np.ascontiguousarray(tf), np.ascontiguousarray(c), np.ascontiguousarray(step),
+                   np.ascontiguousarray(idx, dtype=np.int64), np.ascontiguousarray(cur, dtype=np.int64), dz, hk, qk,
+                   np.ascontiguousarray(weight, dtype=np.float64), float(lam), len_tab, hlen, ok, otab, obits)
+    return ok, otab, obits

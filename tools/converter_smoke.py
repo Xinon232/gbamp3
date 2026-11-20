@@ -245,26 +245,37 @@ def run(output_dir):
         require(not (collision_out / 'same.gac').exists(), 'Collision wrote an output')
         checks.append('collision_preflight')
 
-        # Actual Stop callback while the first real song is running. The short
-        # general fixture can finish before Tk's 30 ms event poll on fast hosts;
-        # use a separate longer real MP3 here, without delaying conversion code.
-        stop_two = copy_song('stop/second.mp3')
-        stop_one = stop_two.with_name('first.mp3')
-        subprocess.run([ffmpeg, '-nostdin', '-v', 'error', '-f', 'lavfi', '-i',
-                        'aevalsrc=0.2*sin(2*PI*440*t)|0.15*sin(2*PI*733*t):s=44100:d=30',
-                        '-c:a', 'libmp3lame', '-q:a', '0', str(stop_one)],
-                       capture_output=True, check=True, timeout=30,
-                       creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        # Actual Stop callback while songs are being converted (3.3: two at
+        # the same time). The short general fixture can finish before Tk's
+        # 30 ms event poll on fast hosts; use longer real MP3s here, without
+        # delaying conversion code. Stop finishes both, starts no third.
+        stop_three = copy_song('stop/third.mp3')
+        stop_one, stop_two = stop_three.with_name('first.mp3'), stop_three.with_name('second.mp3')
+        for song in (stop_one, stop_two):
+            subprocess.run([ffmpeg, '-nostdin', '-v', 'error', '-f', 'lavfi', '-i',
+                            'aevalsrc=0.2*sin(2*PI*440*t)|0.15*sin(2*PI*733*t):s=44100:d=30',
+                            '-c:a', 'libmp3lame', '-q:a', '0', str(song)],
+                           capture_output=True, check=True, timeout=30,
+                           creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         stop_sent = [False]
         def stop_current():
-            if app.current_song.get().startswith('File 1/2:') and not stop_sent[0]:
+            if 'converting 2 at the same time' in app.current_song.get() and not stop_sent[0]:
                 app.stop_button.invoke()
                 stop_sent[0] = True
-        result = batch([stop_one, stop_two], expected=(1, 0, 0), during=stop_current)
-        require(stop_sent[0] and result['stopped'] and result['remaining'] == 1, 'Stop did not finish exactly the current song')
+        previous_jobs = os.environ.get('GBACACHE_JOBS')
+        os.environ['GBACACHE_JOBS'] = '2'
+        try:
+            result = batch([stop_one, stop_two, stop_three], expected=(2, 0, 0), during=stop_current)
+        finally:
+            if previous_jobs is None:
+                os.environ.pop('GBACACHE_JOBS', None)
+            else:
+                os.environ['GBACACHE_JOBS'] = previous_jobs
+        require(stop_sent[0] and result['stopped'] and result['remaining'] == 1, 'Stop did not finish exactly the songs being converted')
         verify_gac(stop_one.with_suffix('.gac'), 32768)
-        require(not stop_two.with_suffix('.gac').exists(), 'Stop started another song')
-        checks.append('stop_after_current_song')
+        verify_gac(stop_two.with_suffix('.gac'), 32768)
+        require(not stop_three.with_suffix('.gac').exists(), 'Stop started another song')
+        checks.append('stop_after_current_songs')
 
         # Persist every ordinary preference, but never the queue or a running job.
         app.output_radios[0].invoke()

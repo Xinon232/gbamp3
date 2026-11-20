@@ -284,6 +284,11 @@ def _header_bits(idx, cur, tab):
 
 
 _STEPS = np.array(STEP, np.float64)
+# Code lengths of the residual tables for the C choice (gac_native.c): 4 x 256.
+_LEN_TAB = np.zeros((TABLES, 256), np.int64)
+for _t in range(TABLES):
+    _LEN_TAB[_t, :len(_LEN[_t])] = _LEN[_t]
+_LEN_TAB = np.ascontiguousarray(_LEN_TAB.reshape(-1))
 
 
 def _subblocks(t, src, h, c, cur, first, weight, params, native=True):
@@ -314,8 +319,15 @@ def _subblocks(t, src, h, c, cur, first, weight, params, native=True):
     tf = t.astype(np.float64)
     dz = 0.5 - params.deadzone
     if native and native_available():
-        _native.inner(tf, c, step, dz, hk, qk)
-    else:
+        # Converter 3.3: the whole choice in C (same result as below).
+        k, tab, nbits = _native.choose(tf, c, step, idx, cur, dz, hk, qk, weight, params.lam, _LEN_TAB, _HLEN)
+        r = np.arange(N)
+        qi = qk[r, k].astype(np.int64)
+        x = hk[r, k, MAX_ORDER:].astype(np.int64)
+        fidx = np.where(np.any(qi, 1), idx[r, k], 0)
+        newh = np.concatenate([x[:, ::-1], h], 1)[:, :MAX_ORDER]
+        return fidx, tab, qi, x, nbits, cur, newh
+    if True:
         for j in range(SUB):
             acc = np.einsum('nkt,nkt->nk', hk[:, :, j:j + MAX_ORDER], np.broadcast_to(cr, (N, K, MAX_ORDER))) + 2048
             acc = np.mod(acc + 2147483648.0, 4294967296.0) - 2147483648.0     # 32-bit wrap

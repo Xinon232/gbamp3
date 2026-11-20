@@ -52,7 +52,7 @@ def self_test(output_dir: Path) -> dict:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description='gbamp3 converter 3.2 GAC Converter')
+    parser = argparse.ArgumentParser(description='gbamp3 converter 3.3 GAC Converter')
     parser.add_argument('--self-test', metavar='OUTPUT_DIR', type=Path)
     args = parser.parse_args(argv)
     try:

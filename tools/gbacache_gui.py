@@ -129,7 +129,7 @@ class ConverterGUI:
         run.grid(row=9, column=0, sticky='ew', pady=10)
         self.convert_button = ttk.Button(run, text='Convert', command=self.start_conversion)
         self.convert_button.grid(row=0, column=0, sticky='w')
-        self.stop_button = ttk.Button(run, text='Stop after current song', command=self.request_stop)
+        self.stop_button = ttk.Button(run, text='Stop after current songs', command=self.request_stop)
         self.stop_button.grid(row=0, column=1, sticky='w', padx=8)
         # Long songs take minutes: this one abandons the current song at once.
         self.cancel_button = ttk.Button(run, text='Cancel now', command=self.request_cancel)
@@ -362,38 +362,66 @@ class ConverterGUI:
             parent=self.root)
 
     def convert_files(self, pairs, ffmpeg, options):
-        succeeded = skipped = failed = completed = 0
-        for index, (source, destination) in enumerate(pairs, 1):
-            if self.stop_requested.is_set():
-                break
-            self.events.put(('song', (index, len(pairs), source.name)))
-            def progress(fraction, message):
-                self.events.put(('progress', (max(0., min(1., float(fraction))), str(message))))
-            try:
-                common = dict(overwrite=False, replace=options['output_mode'] == 'replace', progress=progress,
-                              cancel=self.cancel_requested.is_set)
-                if options['direction'] == 'mp3_to_gac':
-                    note = gbacache.convert(source, destination, ffmpeg, options['rate'],
-                                            channels=options['channels'], **common)
+        """Converts the songs, several at the same time (one per CPU core;
+        converter 3.3): each file is the same as when converted alone."""
+        total = len(pairs)
+        counts = dict(succeeded=0, skipped=0, failed=0, completed=0)
+        frac = {}                                   # songs being converted: fraction done
+        jobs = gbacache.default_jobs(total)
+
+        def show():
+            names = ', '.join(pairs[i][0].name for i in sorted(frac))
+            if jobs > 1:
+                self.events.put(('songs', (counts['completed'], total, names, len(frac))))
+            overall = (counts['completed'] + sum(frac.values())) / total
+            self.events.put(('progress', (max(0., min(1., overall)), None)))
+
+        def on_start(i):
+            frac[i] = 0.
+            if jobs <= 1:
+                self.events.put(('song', (i + 1, total, pairs[i][0].name, 1)))
+            show()
+
+        def on_progress(i, fraction, message):
+            if i in frac:
+                frac[i] = max(0., min(1., float(fraction)))
+                if jobs <= 1:
+                    self.events.put(('progress', (frac[i], str(message))))
                 else:
-                    note = gbacache.reverse_convert(source, destination, ffmpeg,
-                                                    quality=options['quality'], channels=None, **common)
-            except gbacache.Cancelled:
-                self.events.put(('log', f'Cancelled: {source.name}; no files changed.'))
-                break
-            except gbacache.Skipped as error:
-                skipped += 1
-                self.events.put(('log', f'Skipped: {source.name}: {error}'))
-            except Exception as error:
-                failed += 1
-                self.events.put(('log', f'ERROR: {source.name}: {error}'))
+                    show()
+
+        def on_result(i, status, text):
+            frac.pop(i, None)
+            name = pairs[i][0].name
+            if status == 'cancelled':
+                self.events.put(('log', f'Cancelled: {name}; no files changed.'))
+                return
+            counts['completed'] += 1
+            if status == 'ok':
+                counts['succeeded'] += 1
+                self.events.put(('log', 'Saved: ' + text))
+            elif status == 'skipped':
+                counts['skipped'] += 1
+                self.events.put(('log', f'Skipped: {name}: {text}'))
             else:
-                succeeded += 1
-                self.events.put(('log', 'Saved: ' + note))
-            completed += 1
-            self.events.put(('progress', (1., 'Song finished')))
-        self.events.put(('done', dict(succeeded=succeeded, skipped=skipped, failed=failed,
-                                      remaining=len(pairs) - completed, stopped=self.stop_requested.is_set())))
+                counts['failed'] += 1
+                self.events.put(('log', f'ERROR: {name}: {text}'))
+            show()
+
+        if options['direction'] == 'mp3_to_gac':
+            opts = dict(rate=options['rate'], channels=options['channels'], cover=None, overwrite=False,
+                        replace=options['output_mode'] == 'replace')
+        else:
+            opts = dict(quality=options['quality'], overwrite=False, replace=options['output_mode'] == 'replace')
+        try:
+            gbacache.convert_batch(pairs, ffmpeg, opts, jobs, direction=options['direction'], on_start=on_start,
+                                   on_progress=on_progress, on_result=on_result,
+                                   cancel=self.cancel_requested.is_set, stop=self.stop_requested.is_set)
+        except Exception as error:
+            self.events.put(('log', f'ERROR: {error}'))
+        self.events.put(('progress', (1., 'Finished')))
+        self.events.put(('done', dict(succeeded=counts['succeeded'], skipped=counts['skipped'], failed=counts['failed'],
+                                      remaining=total - counts['completed'], stopped=self.stop_requested.is_set())))
 
     def _idle(self):
         self.busy = False
@@ -424,14 +452,24 @@ class ConverterGUI:
                     self._idle()
                     self.fail(value)
                 elif kind == 'song':
-                    index, total, name = value
+                    index, total, name, _running = value
                     self.current_song.set(f'File {index}/{total}: {name}')
                     self.status.set('Starting song…')
                     self.progress.configure(value=0)
+                elif kind == 'songs':
+                    done, total, names, running = value
+                    if running > 1:
+                        self.current_song.set(f'{done}/{total} done; converting {running} at the same time: {names}')
+                    elif running == 1:
+                        self.current_song.set(f'{done}/{total} done; converting: {names}')
+                    else:
+                        self.current_song.set(f'{done}/{total} done')
                 elif kind == 'progress':
                     fraction, message = value
                     self.progress.configure(value=fraction)
-                    self.status.set(message + (' — stopping after this song' if self.stop_requested.is_set() else ''))
+                    if message is None:
+                        message = f'{int(fraction * 100)}% of all songs'
+                    self.status.set(message + (' — stopping after the songs being converted' if self.stop_requested.is_set() else ''))
                 elif kind == 'log':
                     self.append_log(value)
                 elif kind == 'done':
@@ -450,20 +488,20 @@ class ConverterGUI:
 
     def request_stop(self):
         self.stop_requested.set()
-        self.status.set('Stop requested; the current song will finish safely. No next song will start.')
+        self.status.set('Stop requested; the songs being converted will finish safely. No next song will start.')
         self.update_output_state()
 
     def request_cancel(self):
         """Stop now: the current song is abandoned (no files changed), no next song starts."""
         self.stop_requested.set()
         self.cancel_requested.set()
-        self.status.set('Cancelling the current song; no files will be changed.')
+        self.status.set('Cancelling the songs being converted; no files will be changed.')
         self.update_output_state()
 
     def request_close(self):
         if self.busy:
             self.request_cancel()
-            self.status.set('Cancelling the current song (no files changed). Close again when it has stopped.')
+            self.status.set('Cancelling the songs being converted (no files changed). Close again when they have stopped.')
             return
         if self._closed:
             return

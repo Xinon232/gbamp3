@@ -2,9 +2,23 @@
 
 Made by Halim Jarrar, (C) 2026. halimj.itch.io / gba@halim-jarrar.de.
 
-gbamp3 13.1: an iPod-style music player for the Game Boy Advance. MP3 and GAC v4 caches, a music library built on the GBA itself with album covers, playlists, search, one Stereo/Mono setting, an optional Volume Boost, and conversion between MP3 and GAC on the GBA. Hardware testing pending.
+gbamp3 13.2: an iPod-style music player for the Game Boy Advance. MP3 and GAC v4 caches, a music library built on the GBA itself with album covers, playlists, search, one Stereo/Mono setting, an optional Volume Boost, and conversion between MP3 and GAC on the GBA. Hardware testing pending.
 
 Put MP3 files, .gac caches and folders beneath /gbamp3 on the SD card. MP3 needs no conversion. GAC caches are prepared on a PC with the supplied converter (see CACHE.md). The GBA changes song files only when you ask it to (Rename, Delete or Convert, all Off unless switched on in Secret Settings); otherwise it writes only its own library, playlist and settings files in its folder /gbamp3/GBAMP3.SYS (visible on a PC; Folders and Update Library leave it out). No demo music is embedded.
+
+## Quickstart
+
+For everyone who wants to start listening right away, here are the basics:
+
+- Copy gbamp3.gba to your SD card and your music into the folder /gbamp3 (subfolders are fine): MP3 files as they are, or GAC files made with the converter for the PC.
+- Start gbamp3 from your flashcart, press SELECT and choose Update Library: gbamp3 reads the tags and album covers of all your songs. Run it again after adding new music. (Folders on Home works even before that.)
+- Up / Down choose, A opens or plays, B goes back. Home lists Now Playing, Playlists, Folders, Search, Artists, Albums, Genres and Songs.
+- Now Playing: A play / pause, Left / Right previous / next song (hold: seek), START Song Options.
+- SELECT opens Settings from almost any screen: Playback Mode (Normal, Repeat All, Repeat One, Shuffle), Update Library, Output (Stereo / Mono), Volume Boost.
+- MP3 plays without conversion and sounds best with Output: Mono. For the best sound, also in stereo, convert your songs to GAC on a PC.
+- L+R locks the buttons: the screen goes black and the music keeps playing. Hold START for 1 second to unlock.
+
+It is highly recommended to read the rest of this PDF: it explains every screen, playlists, search, the settings and the converter.
 
 ## Setup and supported files
 
@@ -177,7 +191,7 @@ Host tests run the production library, folder, queue, playlist, settings and tex
 
 ## About / licence
 
-gbamp3 13.1. Copyright (C) 2026 Halim Jarrar. halimj.itch.io / gba@halim-jarrar.de.
+gbamp3 13.2. Copyright (C) 2026 Halim Jarrar. halimj.itch.io / gba@halim-jarrar.de.
 
 gbamp3 is free software, licensed under the GNU General Public License version 3 or later (GPL-3.0-or-later), with an additional permission for linking with the Helix MP3 decoder (the text is in NOTICES.md). The Helix MP3 decoder is licensed under the RealNetworks Public Source License 1.0. No warranty: gbamp3 is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY.
 

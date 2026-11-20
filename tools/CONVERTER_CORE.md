@@ -55,6 +55,34 @@ fractions. Stop-after-current is a batch/UI policy; `convert` and
 it returns True they raise `Cancelled` and change no file (the window's Cancel
 now button and closing it while busy; Ctrl+C on the command line).
 
+## Speed (converter 3.3)
+
+Output bytes are unchanged from 3.2 (same encoder decisions; checked on every
+fixture, both rates, stereo and mono, against the Python reference, and by the
+3.1 hashes of `tests/test_converter_stream.py`).
+
+- **Several songs at once.** `convert_batch` converts the songs in spawned
+  processes, `default_jobs` at a time (one per CPU core, at most 8;
+  `GBACACHE_JOBS` or `--jobs`); in them the encoder uses one core
+  (`GBACACHE_WORKERS=1`). Progress comes back through a queue; Stop starts no
+  further song, Cancel now cancels every running song (no file changed). One
+  song, or `--jobs 1`, runs in the calling process as before, so a long single
+  song still uses the encoder's own workers. If no process can be started the
+  songs are converted one after another.
+- **More of the encoder in C.** `gac_native.c` `gac_choose` (helper ABI 2)
+  does the whole rate-distortion choice of a subblock after the open-loop step
+  estimate: closed-loop quantisation of every candidate step, squared error,
+  bits under all four residual tables, header bits and the cheapest candidate
+  (first on ties). Every value is an exact integer, so the result equals the
+  numpy path, which stays the fallback. The loop runs on integers and
+  interleaves the candidates. Built with `-ffp-contract=off`.
+- **Long songs** keep the 3.2 split (worker processes from about five
+  minutes): measured, a three-minute song split into four workers took longer
+  (14.0 s) than in one (7.9 s).
+
+Measured on 4 cores (3.2 -> 3.3): a three-minute song on one core 7.8 s ->
+4.8 s; 6 three-minute songs 46.5 s -> 10.0 s.
+
 ## Long files (converter 3.2)
 
 Memory does not grow with the length of a song. `convert` reads FFmpeg's PCM

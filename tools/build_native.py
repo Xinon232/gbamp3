@@ -30,7 +30,7 @@ def build(output_dir):
         if Path(cc[0]).stem.lower() in ('cl', 'clang-cl'):
             cmd = cc + ['/nologo', '/O2', '/fp:precise', '/LD', '/std:c11', str(source), '/link', '/OUT:'+str(target)]
         else:
-            cmd = cc + ['-O3', '-std=c11', '-fno-fast-math', '-Wall', '-Wextra', '-Werror']
+            cmd = cc + ['-O3', '-std=c11', '-fno-fast-math', '-ffp-contract=off', '-Wall', '-Wextra', '-Werror']
             cmd += ['-dynamiclib', '-fPIC'] if sys.platform == 'darwin' else ['-shared'] + ([] if sys.platform == 'win32' else ['-fPIC'])
             cmd += [str(source), '-o', str(target), '-lm']
         subprocess.run(cmd, cwd=tmp, check=True)

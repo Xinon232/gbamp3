@@ -1,4 +1,4 @@
-# gbamp3 13.1
+# gbamp3 13.2
 
 gbamp3 is a music player for the Game Boy Advance with an iPod-style
 interface. It plays MP3 files directly, or optional PC-prepared `.gac` audio
@@ -13,7 +13,7 @@ between MP3 and GAC on the GBA. Controls: [CONTROLS.md](CONTROLS.md) and
 [gbamp3-controls.pdf](gbamp3-controls.pdf). GAC caches and the PC
 converter: [CACHE.md](CACHE.md), [GAC_FORMAT.md](GAC_FORMAT.md).
 
-This repository holds the complete source code of gbamp3 13.1.
+This repository holds the complete source code of gbamp3 13.2.
 
 ## Licence
 
@@ -82,7 +82,7 @@ python3 -B player/build.py
 The ROM is `player/build/player.gba` (copy it to the card as `gbamp3.gba`).
 Intermediate files go to `player/build/`, `player/evidence/`, `tmp/` and
 `cache/`. A build of this tag with the toolchain above gives the ROM of the
-gbamp3 13.1 release byte for byte.
+gbamp3 13.2 release byte for byte.
 
 The generated tables are committed; their generators are in `tools/`:
 `tools/gac4.py` (GAC v4 decoder and encoder tables, needs numpy),
@@ -94,8 +94,9 @@ The generated tables are committed; their generators are in `tools/`:
 
 `tools/gbacache_gui.py` (window) and `tools/gbacache.py` (command line)
 convert MP3 files to GAC caches; the window also converts GAC back to MP3.
-Converter 3.2 handles recordings of any length in bounded memory (one GAC
-holds at most 18.2 hours at 32768 Hz, 13.5 hours at 44151 Hz).
+Converter 3.3 converts several songs at the same time (one per processor
+core) and handles recordings of any length in bounded memory (one GAC holds
+at most 18.2 hours at 32768 Hz, 13.5 hours at 44151 Hz).
 They need Python 3.11+, numpy, FFmpeg and, for the window, Tkinter:
 
 ```sh

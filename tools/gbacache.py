@@ -667,6 +667,126 @@ def collect(inputs,recursive=False,output_dir=None,direction='mp3_to_gac'):
         if k not in seen: seen.add(k);out.append((a,b))
     return out
 
+# ---- several songs at once (converter 3.3) ----------------------------------
+# Each song is converted in its own process (one per CPU core); a song's
+# bytes are the same as when it is converted alone. Inside such a process the
+# encoder uses one core (GBACACHE_WORKERS=1): the songs fill the cores.
+_B_CANCEL = _B_QUEUE = None
+
+def default_jobs(count):
+    """Songs converted at the same time: one per CPU core (GBACACHE_JOBS), at
+    most 8 and at most the number of songs; 1 for a single song (a long single
+    song still uses the encoder's own worker processes)."""
+    try: wanted=int(os.environ.get('GBACACHE_JOBS','0'))
+    except ValueError: wanted=0
+    if wanted<=0: wanted=min(8,os.cpu_count() or 1)
+    return max(1,min(wanted,count))
+
+def _cover_kw(options):
+    return {'art_source':options['cover']} if options.get('cover') is not None else {}
+
+def _batch_init(cancel_event,queue):
+    global _B_CANCEL,_B_QUEUE
+    _B_CANCEL,_B_QUEUE=cancel_event,queue
+    os.environ['GBACACHE_WORKERS']='1'
+
+def _batch_one(index,direction,src,dst,ffmpeg,options):
+    """One song in a batch process: ('ok', summary) / ('skipped', reason) /
+    ('cancelled', '') / ('error', message). Progress goes to the queue."""
+    def progress(fraction,message):
+        try: _B_QUEUE.put(('progress',index,float(fraction),str(message)))
+        except Exception: pass
+    cancel=_B_CANCEL.is_set
+    try:
+        if direction=='mp3_to_gac':
+            note=convert(src,dst,ffmpeg,options['rate'],**_cover_kw(options),channels=options['channels'],
+                         overwrite=options['overwrite'],replace=options['replace'],progress=progress,cancel=cancel)
+        else:
+            note=reverse_convert(src,dst,ffmpeg,quality=options.get('quality',0),channels=None,overwrite=options['overwrite'],
+                                 replace=options['replace'],progress=progress,cancel=cancel)
+        return ('ok',note)
+    except Skipped as e: return ('skipped',str(e))
+    except Cancelled: return ('cancelled','')
+    except Exception as e: return ('error',str(e))
+
+def convert_batch(pairs,ffmpeg,options,jobs=None,direction='mp3_to_gac',on_start=None,on_progress=None,on_result=None,
+                  cancel=None,stop=None):
+    """Convert the (source, destination) pairs, `jobs` songs at the same time
+    (default_jobs). options: rate, channels, cover, overwrite, replace (MP3 to
+    GAC) or quality, overwrite, replace (GAC to MP3). Callbacks (called in this
+    thread): on_start(i), on_progress(i, fraction, message), on_result(i,
+    status, text) with status ok / skipped / cancelled / error. cancel():
+    stop now (the songs being converted are left unchanged); stop(): start no
+    further song. Returns the number of songs not started."""
+    jobs=default_jobs(len(pairs)) if jobs is None else max(1,min(jobs,len(pairs)))
+    pending=list(enumerate(pairs))
+    def single():
+        while pending:
+            if (stop and stop()) or (cancel and cancel()): break
+            i,(src,dst)=pending.pop(0)
+            if on_start: on_start(i)
+            prog=(lambda f,m,i=i:on_progress(i,f,m)) if on_progress else None
+            try:
+                if direction=='mp3_to_gac':
+                    note=convert(src,dst,ffmpeg,options['rate'],**_cover_kw(options),channels=options['channels'],
+                                 overwrite=options['overwrite'],replace=options['replace'],progress=prog,cancel=cancel)
+                else:
+                    note=reverse_convert(src,dst,ffmpeg,quality=options.get('quality',0),channels=None,
+                                         overwrite=options['overwrite'],replace=options['replace'],progress=prog,cancel=cancel)
+                r=('ok',note)
+            except Skipped as e: r=('skipped',str(e))
+            except Cancelled: r=('cancelled','')
+            except KeyboardInterrupt: raise
+            except Exception as e: r=('error',str(e))
+            if on_result: on_result(i,*r)
+            if r[0]=='cancelled': break
+        return len(pending)
+    if jobs<=1:
+        return single()
+    import multiprocessing, queue as _queue
+    from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
+    ctx=multiprocessing.get_context('spawn')
+    manager=None
+    try:
+        manager=ctx.Manager()
+        ev,q=manager.Event(),manager.Queue()
+        pool=ProcessPoolExecutor(jobs,mp_context=ctx,initializer=_batch_init,initargs=(ev,q))
+    except (OSError,RuntimeError):
+        if manager: manager.shutdown()
+        return single()                            # (no worker processes here: one song after another)
+    running={}
+    cancelled=False
+    try:
+        def drain():
+            while True:
+                try: kind,i,f,m=q.get_nowait()
+                except _queue.Empty: return
+                except Exception: return
+                if on_progress: on_progress(i,f,m)
+        while pending or running:
+            while pending and len(running)<jobs and not cancelled and not (stop and stop()):
+                i,(src,dst)=pending.pop(0)
+                if on_start: on_start(i)
+                running[pool.submit(_batch_one,i,direction,src,dst,ffmpeg,options)]=i
+            if not running: break
+            done,_=wait(list(running),timeout=0.1,return_when=FIRST_COMPLETED)
+            drain()
+            if cancel and cancel() and not cancelled:
+                cancelled=True; ev.set()
+            for fut in done:
+                i=running.pop(fut)
+                try: r=fut.result()
+                except Exception as e: r=('error',f'converter process failed: {e}')
+                if on_result: on_result(i,*r)
+        drain()
+    except KeyboardInterrupt:
+        ev.set()
+        raise
+    finally:
+        pool.shutdown(wait=True,cancel_futures=True)
+        manager.shutdown()
+    return len(pending)
+
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument('inputs',type=pathlib.Path,nargs='+',help='MP3 file(s) or folders')
@@ -680,6 +800,7 @@ def main():
     ap.add_argument('--mono',action='store_true',help='store one mid channel: about 30%% smaller than stereo GAC; plays mono')
     ap.add_argument('--cover',type=pathlib.Path,help='album image (or MP3 with embedded cover), preconverted to 64x64; default: the input MP3\'s own embedded picture, if any')
     ap.add_argument('--ffmpeg',default=os.environ.get('FFMPEG','ffmpeg'))
+    ap.add_argument('-j','--jobs',type=int,default=0,help='songs converted at the same time (default: one per CPU core, at most 8; 1 = one after another)')
     args=ap.parse_args(); ffmpeg=find_ffmpeg(args.ffmpeg)
     if not ffmpeg: ap.error('ffmpeg not found: install ffmpeg or supply --ffmpeg /path/to/ffmpeg')
     pairs=collect(args.inputs,args.recursive,args.output_dir)
@@ -689,6 +810,33 @@ def main():
     failed=False
     # Progress on a terminal (long files take minutes); Ctrl+C cancels safely.
     show=sys.stderr is not None and sys.stderr.isatty()
+    jobs=default_jobs(len(pairs)) if args.jobs<=0 else min(args.jobs,len(pairs))
+    if jobs>1:
+        # Several songs at the same time (converter 3.3): the same bytes as one after another.
+        options=dict(rate=args.rate,cover=args.cover,channels=1 if args.mono else 2,overwrite=args.overwrite,replace=args.replace)
+        frac={}; state=dict(done=0,failed=False)
+        def line():
+            if show:
+                avg=(state['done']+sum(frac.values()))/len(pairs)
+                sys.stderr.write(f'\r{state["done"]}/{len(pairs)} songs done, {len(frac)} converting ({jobs} at a time): {int(avg*100):3d}%'[:79].ljust(79)); sys.stderr.flush()
+        def on_start(i): frac[i]=0.; line()
+        def on_progress(i,f,m):
+            if i in frac: frac[i]=f; line()
+        def on_result(i,status,text):
+            frac.pop(i,None); state['done']+=1
+            if show: sys.stderr.write('\r'+' '*79+'\r')
+            src=pairs[i][0]
+            if status=='ok': print(text)
+            elif status=='skipped': print(f'SKIPPED: {text}')
+            elif status=='cancelled': print(f'CANCELLED: {src}: no files changed',file=sys.stderr)
+            else: print(f'ERROR: {src}: {text}',file=sys.stderr); state['failed']=True
+            line()
+        try: convert_batch(pairs,ffmpeg,options,jobs,on_start=on_start,on_progress=on_progress,on_result=on_result)
+        except KeyboardInterrupt:
+            if show: sys.stderr.write('\r'+' '*79+'\r')
+            print('CANCELLED: the songs being converted are unchanged',file=sys.stderr); return 130
+        if show: sys.stderr.write('\r'+' '*79+'\r')
+        return int(state['failed'])
     for src,dst in pairs:
         def progress(fraction,message,name=src.name):
             sys.stderr.write(f'\r{name}: {int(fraction*100):3d}% {message}'[:79].ljust(79)); sys.stderr.flush()

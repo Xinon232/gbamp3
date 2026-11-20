@@ -93,26 +93,97 @@ API int gac_decode(const uint8_t *b, int channels, int frames, int mono, int32_t
     return 1;
 }
 
-API int gac_native_abi(void) { return 1; }
+API int gac_native_abi(void) { return 2; }
 API void gac_inner(int64_t n, int64_t k, const double *tf, const int64_t *c,
                    const double *step, double dz, double *hk, double *qk) {
-    for (int64_t s=0;s<n;s++) for (int64_t v=0;v<k;v++) {
-        double *h=hk+(s*k+v)*40, *q=qk+(s*k+v)*32;
-        double st=step[s*k+v];
-        for (int j=0;j<32;j++) {
-            int64_t sum=2048;
-            for (int z=0;z<8;z++) sum+=(int64_t)h[j+z]*c[s*8+7-z];
-            uint32_t bits=(uint32_t)sum;
-            int64_t wrapped=bits>2147483647u?(int64_t)bits-4294967296LL:(int64_t)bits;
-            double pred=floor((double)wrapped/4096.0);
-            double val=(tf[s*32+j]-pred)/st;
-            double quant=copysign(floor(fabs(val)+dz),val);
-            if (quant < -2047.0) quant=-2047.0;
-            if (quant > 2047.0) quant=2047.0;
-            double x=pred+quant*st;
-            if (x < -32768.0) x=-32768.0;
-            if (x > 32767.0) x=32767.0;
-            q[j]=quant; h[8+j]=x;
+    /* 3.3: history and coefficients as integers (every value is an exact
+     * integer; the same result as converting each product from doubles),
+     * the candidates of a stream side by side (they are independent: the
+     * processor overlaps their divisions). */
+    enum { KMAX=16 };
+    for (int64_t s=0;s<n;s++) {
+        int64_t cr[8];
+        for (int z=0;z<8;z++) cr[z]=c[s*8+7-z];
+        const double *t=tf+s*32;
+        for (int64_t v0=0;v0<k;v0+=KMAX) {
+            int kk=(int)(k-v0<KMAX?k-v0:KMAX);
+            int32_t hi[KMAX][40];
+            double st[KMAX];
+            for (int v=0;v<kk;v++) {
+                const double *h=hk+(s*k+v0+v)*40;
+                for (int z=0;z<8;z++) hi[v][z]=(int32_t)h[z];
+                st[v]=step[s*k+v0+v];
+            }
+            for (int j=0;j<32;j++) {
+                for (int v=0;v<kk;v++) {
+                    int64_t sum=2048;
+                    for (int z=0;z<8;z++) sum+=(int64_t)hi[v][j+z]*cr[z];
+                    uint32_t bits=(uint32_t)sum;
+                    int64_t wrapped=bits>2147483647u?(int64_t)bits-4294967296LL:(int64_t)bits;
+                    /* floor(wrapped/4096) without a division: wrapped >= -2^31 */
+                    double pred=(double)((int64_t)((uint64_t)(wrapped+(1LL<<40))>>12)-(1LL<<28));
+                    double val=(t[j]-pred)/st[v];
+                    double y=fabs(val)+dz;   /* >= 0: truncation is floor (clamped to 2047 below first) */
+                    double quant=copysign(y<4096.0?(double)(int64_t)y:4096.0,val);
+                    if (quant < -2047.0) quant=-2047.0;
+                    if (quant > 2047.0) quant=2047.0;
+                    double x=pred+quant*st[v];
+                    if (x < -32768.0) x=-32768.0;
+                    if (x > 32767.0) x=32767.0;
+                    qk[(s*k+v0+v)*32+j]=quant; hk[(s*k+v0+v)*40+8+j]=x; hi[v][8+j]=(int32_t)x;
+                }
+            }
         }
+    }
+}
+
+/* Converter 3.3: the rest of the rate-distortion choice of one subblock in C
+ * (gac4._subblocks after the open-loop step estimate). For each stream s and
+ * candidate v: the closed-loop quantisation (gac_inner), the squared error,
+ * the bits under every residual table (the cheapest wins, the first on a
+ * tie), the header bits, and the candidate with the smallest
+ * error * weight + lam * bits (the first on a tie). Every value is an exact
+ * integer in a double, so the result is the same as the Python reference.
+ * len_tab: 4 x 256 code lengths (pair tables: 15*15+1 symbols, single: 50);
+ * hlen: header code lengths (ZERO_SYMBOL 52, ESC_SYMBOL 53 + table).
+ * Outputs per stream: chosen candidate, its table and its bits. */
+API void gac_choose(int64_t n, int64_t k, const double *tf, const int64_t *c,
+                    const double *step, const int64_t *idx, const int64_t *cur, double dz,
+                    double *hk, double *qk, const double *weight, double lam,
+                    const int64_t *len_tab, const int64_t *hlen,
+                    int64_t *out_k, int64_t *out_tab, int64_t *out_bits) {
+    gac_inner(n, k, tf, c, step, dz, hk, qk);
+    for (int64_t s=0;s<n;s++) {
+        double best=0; int64_t bk=0, btab=0, bbits=0;
+        for (int64_t v=0;v<k;v++) {
+            const double *h=hk+(s*k+v)*40+8, *q=qk+(s*k+v)*32;
+            double d=0;
+            for (int j=0;j<32;j++) { double e=h[j]-tf[s*32+j]; d+=e*e; }
+            int64_t tb[4]={0,0,0,0}, praw=0, sraw=0; int live=0;
+            for (int j=0;j<32;j+=2) {
+                int64_t a=(int64_t)q[j], b=(int64_t)q[j+1];
+                if (a||b) live=1;
+                int64_t sym;
+                if (a>7||a<-7||b>7||b<-7) { sym=225; praw+=24; }
+                else sym=(a+7)*15+b+7;
+                tb[0]+=len_tab[sym]; tb[1]+=len_tab[256+sym];
+            }
+            for (int j=0;j<32;j++) {
+                int64_t a=(int64_t)q[j], sym;
+                if (a>24||a<-24) { sym=49; sraw+=12; }
+                else sym=a+24;
+                tb[2]+=len_tab[512+sym]; tb[3]+=len_tab[768+sym];
+            }
+            tb[0]+=praw; tb[1]+=praw; tb[2]+=sraw; tb[3]+=sraw;
+            int64_t tab=0;
+            for (int t=1;t<4;t++) if (tb[t]<tb[tab]) tab=t;
+            int64_t fidx=live?idx[s*k+v]:0, sym;
+            if (fidx==0) sym=52;
+            else { int64_t dd=fidx-cur[s]; sym=(dd>=-6&&dd<=6)?(dd+6)*4+tab:53+tab; }
+            int64_t nbits=hlen[sym]+(sym>=53?6:0)+(live?tb[tab]:0);
+            double cost=d*weight[s]+lam*(double)nbits;
+            if (v==0||cost<best) { best=cost; bk=v; btab=tab; bbits=nbits; }
+        }
+        out_k[s]=bk; out_tab[s]=btab; out_bits[s]=bbits;
     }
 }

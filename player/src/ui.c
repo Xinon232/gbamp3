@@ -65,6 +65,12 @@ static unsigned depth,full_dirty,row_dirty,locked,frame_count,message_frames,sea
  * unlocks the lock screen (sleep: player_sleep waits for it). */
 #define UNLOCK_HOLD 60
 static unsigned unlock_guard,unlock_quiet;
+/* 13.1: after unlocking, the screen stays black until the new picture is
+ * shown (the page still holds the picture from before the lock, e.g. the
+ * song that was playing then): 1 drawing, 2 switch queued, then on. At most
+ * UNLOCK_DARK_MAX frames. */
+static unsigned unlock_dark,unlock_dark_frames;
+#define UNLOCK_DARK_MAX 60
 static unsigned restart_failed;
 static const char *message;
 static struct Screen *top(void){return &stack[depth-1];}
@@ -524,7 +530,7 @@ static void draw_info(struct Screen *s){
 #define ABOUT_PAGES 8
 static const char *const about_titles[ABOUT_PAGES]={"About","Controls","License","MP3 decoder","SD card and files","Text and fonts","More credits","Secret Settings"};
 static const char *const about_pages[ABOUT_PAGES][8]={
- {"gbamp3 13.1","(c) 2026 Halim Jarrar","","GPL-3.0-or-later with","Helix linking permission","No warranty.","Source:","github.com/Xinon232/gbamp3"},
+ {"gbamp3 13.2","(c) 2026 Halim Jarrar","","GPL-3.0-or-later with","Helix linking permission","No warranty.","Source:","github.com/Xinon232/gbamp3"},
  {"Start: Options   Select: Settings","A: Open / Play   B: Back","L+R: Lock   Start: Unlock","Now Playing: Left / Right","tap: prev / next, hold: seek","Up / Down: Volume Boost level","Playlist: hold A + Up / Down","Search: Start + A B L R Up Down"},
  {"gbamp3 is free software under","the GNU GPL version 3 or later,","with an additional permission","for linking with the Helix MP3","decoder (see NOTICES.md).","Contact: halimj.itch.io","gba@halim-jarrar.de","Credits: next pages."},
  {"Helix MP3 decoder","Helix DNA Client technology","included. (c) 1995-2002","RealNetworks, Inc.","All rights reserved.","License: RPSL 1.0","By Jon Recker and Ken Cooke;","Arduino version: Phil Schatzmann"},
@@ -1461,8 +1467,8 @@ static void secret_action_input(struct Screen *s,const struct InputFrame *in){
 }
 static void lock(unsigned on){
  locked=on;stats.locked=on;
- if(on){box_off();gfx_screen(0);}   /* the picture off: black backdrop */
- else{gfx_screen(1);redraw();unlock_guard=1;unlock_quiet=0;input_consume(0x3ff);}
+ if(on){box_off();gfx_screen(0);unlock_dark=0;}   /* the picture off: black backdrop */
+ else{redraw();unlock_dark=1;unlock_dark_frames=0;unlock_guard=1;unlock_quiet=0;input_consume(0x3ff);}   /* 13.1: on once the new picture is shown */
 }
 void ui_init(void){
  {unsigned n;uint8_t *z=library_scratch(&n);folder_sort_area(&dirs,z,n/4);folder_sort_area(&songs,z+n/4,n/4+n/8);}   /* 16 + 24 KB */
@@ -1509,6 +1515,7 @@ static void ui_frame_body(const struct InputFrame *in);
  * selection, top row, first byte of the box label. */
 void ui_frame(const struct InputFrame *in){
  gfx_ready();   /* v1.7: the hidden page is free to draw on */
+ if(unlock_dark&&!locked&&(unlock_dark==2||++unlock_dark_frames>UNLOCK_DARK_MAX)){unlock_dark=0;gfx_screen(1);}   /* the new picture is on the page now */
  static struct InputFrame quiet;   /* static: ui_frame's stack frame stays small */
  if(unlock_guard){   /* buttons do nothing until all are up for a moment */
   quiet=*in;quiet.pressed=quiet.tap=quiet.repeat=0;quiet.lr_chord=quiet.a_chord=0;
@@ -1520,6 +1527,7 @@ void ui_frame(const struct InputFrame *in){
  ui_frame_body(in);
  const struct Screen *s=top();
  if(!(is_list(s)&&row_dirty)&&!(s->type==T_NOW&&np_stage))gfx_commit();   /* a list is shown only once all its rows are painted; Now Playing once all its sections are */
+ if(unlock_dark==1&&!locked&&gfx_flip_state)unlock_dark=2;   /* 13.1: the new picture's switch is queued */
  stats.browser_open=s->type|(box_on?(box_fade?0x200u:0x100u):0u);stats.browser_selection=s->sel;stats.browser_error=s->top;stats.info_page=box_on?(uint8_t)box_label[0]:s->type==T_ABOUT||s->type==T_SECRET?s->p0:0;   /* About: page; Secret Settings: the row asking Sure? (15: none) */
 }
 static void ui_frame_body(const struct InputFrame *in){
